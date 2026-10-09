@@ -62,8 +62,10 @@ HTTP 回调 200 不代表 AI 已处理；客户端会过滤早于本次进程启
 | [部署运维](docs/12-deployment-runbook.md) | 网络、问答配置、Windows 与故障处理 |
 | [依据登记](docs/14-sources-and-verification.md) / [技术评审](docs/15-feasibility-review.md) | 固定来源、结论及未完成项 |
 | [架构决策](docs/adr/0001-design-baseline.md) | 唯一现行实现基线与取舍 |
+| [Agent 实现手册](docs/16-agent-implementation-playbook.md) | 防止实现偏移、日志和测试门禁 |
 | [任务模板](docs/templates/task-brief.md) / [测试报告](docs/templates/test-report.md) | 可按实际任务简短填写，不编造结果 |
 
 ## 当前交付状态
 
 当前仅有设计及源码审查依据，未操作真实客服账号、未部署或配置生产凭证。腾讯官方页面尚未取得可验证正文；不能把 SDK 注释中的数字或测试 fake 当作最新官方政策。外部契约可按当前能力切片核验，真实功能发布前必须完成相应企业权限、接口、并发及全链路联调。
+
