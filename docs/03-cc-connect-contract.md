@@ -1,36 +1,35 @@
 # cc-connect 兼容契约
 
-> v0.1。本文规定本网关必须兼容的客户端行为及本项目自定义响应。不是腾讯完整自建应用 API 实现。
+> v0.2。本网关只实现固定客户端所用的 HTTP 自建应用协议子集，不模拟腾讯全部 API。
 
-## 1. 基线与依据
+## 1. 固定基线
 
-固定提交：`whysmx/cc-connect@848eb24d89bbd83d03c2afd0dbd94768fd86d5a8`。
+上游 `chenhg5/cc-connect@dfad19415a38b00b2c5c288610784d1a7eef337f`：
 
-- [platform/wecom/wecom.go](https://github.com/whysmx/cc-connect/blob/848eb24d89bbd83d03c2afd0dbd94768fd86d5a8/platform/wecom/wecom.go)：New、Start、handleMessage、Reply、SendImage、getAccessToken、resolveUserName、decrypt。
-- [web/src/lib/platformMeta.ts](https://github.com/whysmx/cc-connect/blob/848eb24d89bbd83d03c2afd0dbd94768fd86d5a8/web/src/lib/platformMeta.ts)：现有 WeChat Work 表单和高级字段。
-- [core/message.go](https://github.com/whysmx/cc-connect/blob/848eb24d89bbd83d03c2afd0dbd94768fd86d5a8/core/message.go)：用户名及附件相关数据处理。
+- [platform/wecom/wecom.go](https://github.com/chenhg5/cc-connect/blob/dfad19415a38b00b2c5c288610784d1a7eef337f/platform/wecom/wecom.go)：配置、回调、发送、令牌、昵称、媒体、加解密。
+- [core/dedup.go](https://github.com/chenhg5/cc-connect/blob/dfad19415a38b00b2c5c288610784d1a7eef337f/core/dedup.go)：旧消息过滤。
+- [config.example.toml](https://github.com/chenhg5/cc-connect/blob/dfad19415a38b00b2c5c288610784d1a7eef337f/config.example.toml)：显示与会话配置。
 
-本次只做源码检查，未运行客户端。P0 要记录实际二进制版本、SHA、未修改上游对照和契约测试报告；不能把此 Fork 提交叫作官方最新发布版。
+原 Fork `whysmx/cc-connect@848eb24d89bbd83d03c2afd0dbd94768fd86d5a8` 保留历史对照。上游已有 api_base_url；这次是源码核对，不是二进制、GUI 或 Codex 实测。固定版本运行前仍做互操作测试。
 
-## 2. 配置字段
+## 2. 配置与网络
 
-| 字段 | 本网关约定 |
+| 字段 | 网关约定 |
 |---|---|
-| corp_id | 网关分配的虚拟企业标识；不是实际企业 Secret 的伴随字段 |
-| corp_secret | 每个绑定独立的网关接入密钥 |
-| agent_id | 正整数十进制字符串，表示绑定；兼容 JSON 字符串和 XML 整数 |
-| callback_token | 该绑定的签名 Token |
-| callback_aes_key | 32 字节密钥编码出的 43 字符 Base64（去掉末尾等号） |
-| port | cc-connect 本机 HTTP 监听端口，多个同机实例不得冲突 |
-| callback_path | cc-connect 本地路由，如 /wecom/callback |
-| api_base_url | 网关兼容 API 基础地址，不含末尾 /cgi-bin/message/send |
-| allow_from | 客户兼容 UID 白名单；见身份及运维文档 |
+| corp_id | 每绑定独立虚拟企业标识 |
+| corp_secret | 每绑定独立网关接入密钥，绝非真实微信 Secret |
+| agent_id | 正整数十进制字符串 |
+| callback_token | 当前绑定签名 Token |
+| callback_aes_key | 32 字节随机密钥的 Base64 去尾等号，43 字符 |
+| port | 客户端监听端口，同机不同平台实例不得冲突 |
+| callback_path | 如 /wecom/callback |
+| api_base_url | 网关基础地址，不带 /cgi-bin/... |
+| allow_from | 兼容 UID 白名单；使用 * 必须另有网关客户授权及受保护回调 |
 
-不要设置 `mode=websocket`。当前代码只在该值精确匹配时进入另一套协议；表单不要求填写 mode。
-
-示例仅使用占位符，不能直接运行：
+不设置 `mode=websocket`。现有 WeChat Work 手动配置沿用上述字段；网关另保存完整 callback_url，并且必须能从网关访问。只设置 api_base_url 不建立反向长连接。挑战验证使用加密 echostr GET，必须匹配回显，不能拿 TCP 连通或 HTTP 200 代替。
 
 ```toml
+# 仅字段示例，必须换成实际生成凭证，并放入既有项目配置。
 [[projects.platforms]]
 type = "wecom"
 [projects.platforms.options]
@@ -42,113 +41,110 @@ callback_aes_key = "REPLACE_WITH_VALID_43_CHARACTER_KEY"
 port = "8081"
 callback_path = "/wecom/callback"
 api_base_url = "https://bridge.example.com"
-allow_from = "*"
+allow_from = "REPLACE_WITH_ALLOWED_UIDS"
 ```
 
-`*` 只用于明确允许所有映射客户的部署，不是通用安全默认。修改 TOML 是配置行为，不是改源码；本项目首选支持现有表单完成操作。
+## 3. 通用兼容响应
 
-## 3. HTTP API 通用约定
+不透明转发未知 /cgi-bin 路径，不允许跨绑定查询、群发或任意 userid。所有 JSON 成功响应显式含整数 `errcode:0`；错误显式含非零 errcode 与脱敏 errmsg。客户端部分函数不检查 HTTP 状态而只解析 errcode，不能回空对象造成假成功。协议/鉴权错误同时给适当 HTTP 状态；媒体二进制例外见第 7 节。
 
-所有 /cgi-bin 路径由网关实现。仅兼容规定的方法和字段，未知路径不透明转发到腾讯。不允许令牌跨绑定、任意 userid 查询或群发。查询串中的密钥/令牌在反向代理、日志、异常追踪中均须脱敏。
+网关自定义码：70001 认证，70002 越权，70003 参数，70004 停用/人工/旧代际，70005 不支持，70006 平台拒绝，70007 暂不可用，70008 结果未知。不是微信官方错误码，原官方码单独保留于脱敏诊断。
 
-成功 JSON 必须含整数 `errcode:0`；错误 JSON 必须含非零 `errcode` 和不含密钥的 errmsg。不能只返回 HTTP 500 加空对象：当前部分解析只读取 errcode，缺省值可能被理解为成功。业务错误可返回 HTTP 200 加非零 errcode，协议/鉴权失败也须有正确 HTTP 状态和非零体。`media/get` 的二进制行为另见第 7 节。
+查询串 token/secret 在两端和反向代理日志均脱敏。外部微信 token 不得返回给 cc-connect。
 
-内部网关错误码预留 `70001` 认证、`70002` 越权、`70003` 参数、`70004` 停用/人工/旧代际、`70005` 不支持类型、`70006` 平台拒绝、`70007` 暂时不可用、`70008` 结果未知。这些是本网关错误码，不是微信官方错误码。原官方 errcode 仅在脱敏诊断记录中保留。
+## 4. Token 与用户名
 
-## 4. 令牌与用户接口
-
-### GET /cgi-bin/gettoken
-
-查询 `corpid`、`corpsecret`。验证有效绑定及凭证版本，返回独立的高熵随机兼容令牌：
+`GET /cgi-bin/gettoken?corpid=...&corpsecret=...`：验证绑定、启用/撤销状态及凭证版本，返回只属于该绑定的高熵虚拟 access_token。示例寿命 3600 秒为网关设计值，不是微信规定。
 
 ```json
 {"errcode":0,"errmsg":"ok","access_token":"opaque_gateway_token","expires_in":3600}
 ```
 
-3600 秒是本版建议的网关令牌寿命，不是微信寿命。客户端会减去 60 秒做缓存；必须返回合法正值。令牌只作用于一个 binding，不能返回真实微信 access_token。停用/撤销后拒绝旧令牌，且操作指南须说明该客户端可能缓存旧令牌至到期，需要协调重启或过渡轮换。
+客户端对正常 expires_in 缓存时减 60 秒；非正值回退 7200 秒。网关必须返回合法正值，不能依赖回退。轮换/停用拒绝旧 token，运维需处理客户端缓存，并明确协调配置更新/重启或有限过渡期。
 
-### GET /cgi-bin/user/get
-
-查询 `access_token`、`userid`。校验 userid 属于令牌对应绑定，再由身份映射找到真实客户。成功：
+`GET /cgi-bin/user/get?access_token=...&userid=...`：先校验 token 与 UID 的 binding，再解析当前客户资料。
 
 ```json
 {"errcode":0,"errmsg":"ok","userid":"bcu_example_g1","name":"客户昵称"}
 ```
 
-昵称暂时不可得时返回 `errcode:0`、空 `name`，让客户端显示 UID 且不缓存一个虚假的非空昵称；不影响正常回复。跨绑定或不存在 UID 返回非零错误。源码对非空 name 做进程内缓存，网关无法无修改强制刷新。头像不是该兼容函数消费的字段，不承诺头像透传到客户端界面。
+昵称不可得时合法 UID 返回空 name，客户端回退 UID 且不缓存虚假昵称；未知/越权 UID 返回错误。非空 name 被客户端进程内缓存，没有网关主动失效接口。头像不属于该函数消费字段，不能声称头像透传。身份与代际规则见[身份文档](06-customer-identity.md)。
 
-## 5. 发送接口
+## 5. message/send
 
-### POST /cgi-bin/message/send?access_token=...
-
-文本示例：
+`POST /cgi-bin/message/send?access_token=...`：
 
 ```json
 {"touser":"bcu_example_g1","msgtype":"text","agentid":"1000002","text":{"content":"回答内容"},"safe":0}
 ```
 
-客户端 agentid 可能为字符串；网关仅接受可无损解析的十进制字符串或整数，统一校验到令牌绑定，禁止浮点截断。touser 首版只允许单一已登记 UID，禁止 `@all`、分隔列表及未知用户。text 和 markdown 均按客户可见的普通文本转换；不得假定微信客服支持自建应用 Markdown 语义。
+agentid 接受可无损解析的十进制字符串或整数，并与 token 绑定核对；禁止浮点截断。touser 仅允许一个已登记 UID，不允许 @all、分隔列表或未知客户。text/markdown 作为普通文本适配到微信客服，不承诺其具备自建应用 Markdown 展示语义。
 
-客户端会按 UTF-8 字节分块发送长回复；网关不能假定一次 HTTP 调用等于一个完整答案，也不能靠内容相同把两条合法回复合并。按官方已核验的发送约束进一步校验，不得偷偷删除超限内容。
+固定 `Reply` 先按配置移除 Markdown，再按 **2000 UTF-8 字节**分块，逐次 HTTP 调用；任一块出错即返回错误。客户端出站 HTTP timeout **30 秒**。网关建议在 **15 秒**内完成状态查询和发送等总预算，15 秒属于本地设计值。
 
-先持久化操作记录，再检查账号、binding revision、客户代际、人工状态和媒体权限，随后调用真实微信发送。只有拿到官方成功响应才返回 `errcode:0`（表示官方接受，不表示客户已读）。若超时且结果无法证明，标 UNKNOWN，返回 70008，不盲目重复发送。详见可靠性文档。
+每个请求先登记 outbox，再检查绑定 revision、UID generation、客户授权、官方人工状态及窗口/预算。明确官方成功才回 errcode 0，含义仅为官方接受；结果不明回 70008 并保存 UNKNOWN。不能先回成功再异步发送，不能返回失败后自动继续排队发送。
 
-图片示例：
+没有原问题 ID、完整回答结束标识或请求幂等键。相同文本可以是两次合法回答，不能按内容去重；也不能推断后续片段属于哪一个完整回答或自动聚合。每段、图片、思考/工具/状态提示均可能消耗平台额度；关闭非必要提示，详见[运维](12-deployment-runbook.md)和[可靠性](07-delivery-and-handover.md)。
+
+出站图片请求：
 
 ```json
 {"touser":"bcu_example_g1","msgtype":"image","agentid":"1000002","image":{"media_id":"bm_example"}}
 ```
 
-媒体 ID 必须属于当前绑定且未过期。msgtype 未实现时明确报错，不假装成功。
+仅接受当前绑定、用途正确且未过期的虚拟媒体 ID。未实现类型明确拒绝，不伪成功。
 
-## 6. 网关投递到 cc-connect 的加密 XML
+## 6. 网关到客户端的 XML
 
-方向是网关 → `binding.callback_url`。目标不一定公开，但必须能从网关访问。
-
-明文示例：
+明文结构使用 XML 编码器生成，正文/昵称/文件名安全转义，不拼入模型指令：
 
 ```xml
 <xml>
   <ToUserName>bridge_example_a</ToUserName>
   <FromUserName>bcu_example_g1</FromUserName>
-  <CreateTime>由原消息时间转换的Unix秒</CreateTime>
+  <CreateTime>1791500000</CreateTime>
   <MsgType>text</MsgType>
-  <Content>经XML安全转义的原问题</Content>
+  <Content>客户问题</Content>
   <MsgId>1000000001</MsgId>
   <AgentID>1000002</AgentID>
 </xml>
 ```
 
-这段包含说明性占位符，测试夹具须替换为实际整数。禁止字符串拼接未转义昵称、正文和文件名；使用 XML 编码器。消息正文与昵称是数据，不得把网关指令或模型提示词拼入客户原文。
+示例时间/ID 仅示意。实际 CreateTime 必须来自原始 send_time，不改当前时间或 0 绕过过滤。原始客服 msgid 为字符串，单独保存；兼容 MsgId 分配稳定唯一正 int64，重试沿用同一个值，不用时间戳或截断哈希冒充唯一。
 
-MsgId 由网关分配稳定正 int64，保证持久化唯一；微信客服原始消息 ID 即使是字符串也必须单独保存，不能直接塞入 int64 字段或使用不校验冲突的截断哈希。重投同一条消息使用同一 MsgId。不要把时间戳单独当 ID。
-
-按源码兼容结构加密：16 字节安全随机前缀 + 4 字节大端的明文 UTF-8 字节长度 + 明文 XML + 虚拟 corp_id；采用 32 字节分组补位约定，再 AES-256-CBC，IV 为密钥前 16 字节；Base64 密文放入外层 Encrypt。签名是 callback_token、timestamp、nonce、Encrypt 排序拼接后的 SHA-1 小写十六进制。该结构源自固定客户端，不能混用 WSS 帧或客服事件的原始密文。
+加密载荷：安全随机 16 字节 + 4 字节大端 XML UTF-8 长度 + XML + 虚拟 corp_id；按 32 字节分组补位规则填充，再 AES-256-CBC，IV 为 key 前 16 字节，结果 Base64。签名为 callback_token、timestamp、nonce、Encrypt 排序拼接的 SHA-1 小写十六进制。
 
 ```text
 POST {callback_url}?msg_signature=...&timestamp=...&nonce=...
 Content-Type: application/xml; charset=utf-8
 ```
 
-外层为 `<xml><ToUserName>...</ToUserName><AgentID>...</AgentID><Encrypt>...</Encrypt></xml>`。重试可重新生成 nonce/加密前缀，但原始 MsgId 与业务正文保持不变。要用独立的已知向量和固定客户端互操作测试，而不只是网关自己的 encrypt/decrypt 自证。
+外层 `<xml><ToUserName>...</ToUserName><AgentID>...</AgentID><Encrypt>...</Encrypt></xml>`。每绑定使用独立加密密钥和签名 Token。以独立测试向量及未改适配器验证，不只自加密/自解密。网关接收官方密文时使用严格补位校验，不照抄客户端宽松解密逻辑。
 
-目标验证用 GET 加密 echostr：客户端返回解密后的挑战原文才算通过；不能仅用 TCP 通或 HTTP 200 判定凭证正确。不得发送伪造客户问题做“连接测试”，避免无意触发 Codex。
+客户端 SessionKey 是 `wecom:{兼容UID}`；文本 handler 以 goroutine 调用，媒体另异步下载。网关只能控制投递顺序，不能把 ACK 当成上一轮已执行完成。
 
-## 7. 媒体契约
+## 7. 媒体能力及明确限制
 
-客户端入站 HTTP 支持 image、voice、file，随后调用 GET `/cgi-bin/media/get?access_token=...&media_id=...`。网关返回经授权的原始媒体字节；文件名通过 XML FileName 提供，voice 带 Format。媒体文件必须在投递前准备好，所有虚拟 media_id 与绑定关联。
+入站 HTTP 支持 image、voice、file，随后 GET `/cgi-bin/media/get?access_token=...&media_id=...`。文件名用 XML FileName，语音用 Format；格式与实际字节一致。媒体在 XML 投递前先下载、验证并固定本地引用，不在下载请求时才临时抓一个可能过期的官方 URL。
 
-客户端该下载函数仅读取响应字节，并未完整校验 HTTP/JSON 错误。因此不能用 JSON 错误体冒充媒体成功。对已知准备失败的文件不要先投递 XML；到期/越权下载应返回非成功状态、空响应体并记录事件，兼容测试证明不会泄露或产生伪文件，无法处理的情况明确作为已知限制。
+固定图片 handler 一律标记 `image/jpeg`。非 JPEG 图片必须在有大小/像素上限的条件下规范化为 JPEG，或以实际下游测试证明可正确解码后再放开该格式；不能仅改 HTTP Content-Type 就认为已修复。规范化可能损失透明度/动画，应明确边界，不建设通用转码服务。
 
-出站图片接口为 POST `/cgi-bin/media/upload?access_token=...&type=image`，multipart 字段名 media。网关校验文件大小、魔数、类型，保存映射/必要上传，返回 `{"errcode":0,"errmsg":"ok","media_id":"bm_example"}`。不能承诺固定客户端拥有通用出站文件发送接口；其他能力需新证据和范围评审。
+固定 downloadMedia 只读响应体，**不检查 HTTP 状态或 JSON 错误**。返回非 200 空体可以避免把 JSON 错误当正文泄露，但仍可能生成空附件；原来“这样即可保证无伪文件”的要求不成立。已知失败不投递 XML；已投递后的过期/磁盘/网络异常记录可见故障，不能无修改客户端保证所有失败均优雅处理。未通过异常用例的媒体能力不标完成。
 
-## 8. 必须显式保留的客户端限制
+出站图片上传：POST `/cgi-bin/media/upload?access_token=...&type=image`，multipart 字段 `media`，校验大小/魔数/类型，保存虚拟映射后返回：
 
-- 回调 handleMessage 在进一步解析、旧消息过滤、权限过滤及异步处理前已写 HTTP 200；这只表示 HTTP 接受，绝不是 AI 完成回执。
-- MsgId 去重在客户端只是短期进程内缓存；网关必须做独立持久化去重。
-- 客户端对旧消息可能过滤。P0 检查具体阈值；禁止偷偷修改 CreateTime 绕过。超过投递有效期的记录进入 expired/not-dispatched。
-- 回复包含 touser/agentid，没有原问题 MsgId、代际编号或幂等请求头；网关通过兼容 UID 编码/映射代际，不能凭空精确关联某条原问题。
-- 每个 HTTP 平台实例单独 ListenAndServe；同机不同项目应使用不同端口。只填不同 path 不解决端口竞争。
-- 只读问答不能禁止全部运行时写入：cc-connect 可能存附件、日志、会话；项目资料只读与运行时目录可写要分开。
+```json
+{"errcode":0,"errmsg":"ok","media_id":"bm_example"}
+```
 
-这些是验收前提，不允许 Agent 修改客户端来掩盖。
+固定适配器实现 ImageSender，不承诺通用出站文件/语音能力。媒体不执行、不任意解压；下载仅按授权 ID 映射，禁止任意 URL/路径代理。
+
+## 8. 重启、去重和安全配置
+
+- `handleMessage` 在业务解析、旧消息及 allow_from 过滤前写 HTTP 200；最多证明 HTTP 接受。
+- 去重缓存约 60 秒且只在进程内；重启后不存在，不能作为持久可靠投递承诺。
+- 旧消息条件是 `msgTime.Before(StartTime.Add(-2*time.Second))`。不是“当前时间前两秒的消息都过期”。网关挑战接口不能查询 StartTime；不知道实际启动边界时不得凭 200 宣称已处理或凭推测宣称已过滤。
+- 客户端重启/不可达恢复后，历史消息默认暂停而非篡改时间重放；客户可重新发送问题。网关自己的重启与客户端重启不是同一事件。
+- 只读、控制命令、别名、闲置重置及提示消息配置见运维。稳定 UID 不能阻止客户端默认闲置新会话，也不能充当客户文件保密边界。
+
+以上边界进入原验收矩阵及 AT-059～AT-069，不通过修改客户端来隐瞒。

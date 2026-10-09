@@ -1,49 +1,40 @@
-# 数据模型、配置与安全设计
+# 数据、配置与安全
 
-> v0.1。字段是逻辑模型，不是已创建的数据库。建议 SQLite 单实例持久化；具体 DDL、驱动版本与迁移脚本在 P0/P1 冻结。
+> v0.2。逻辑数据职责不是强制物理表清单。首版单实例 SQLite，不预建分布式协调或多租户平台。
 
-## 1. 最小持久化实体
+## 1. 必要持久化
 
-| 实体 | 关键字段/约束 |
+| 逻辑数据 | 不可丢失的字段/约束 |
 |---|---|
-| tenants | id、真实 corp_id、凭证引用、回调密钥引用、状态、revision |
-| kf_accounts | id、tenant_id、open_kfid、name/avatar 元数据、visibility_status、last_sync_at；唯一(tenant_id,open_kfid) |
-| bindings | id、account_id、project_label、callback_url、虚拟 corp_id/agent_id、凭证引用/版本、enabled、revision；每账号最多一个 active |
-| credentials/tokens | binding_id、版本、哈希/密文或引用、到期/撤销时间；虚拟令牌与官方令牌分表或明确类型 |
-| customers | id、tenant_id、external_userid 受保护值、查询索引、昵称、缓存状态/时间；企业范围唯一 |
-| conversations | id、binding_id、customer_id、generation、官方状态、fence_version、状态来源/时间 |
-| bridge_user_aliases | 不透明 uid、conversation_id、generation、active/blocked、created_at；旧 UID 永不再分配 |
-| sync_cursors | sync_scope_key、cursor、revision、last_success_at；作用域由外部核验确定 |
-| sync_jobs | scope、通知/Token 受保护引用、状态、attempt、lease、next_attempt_at |
-| inbox | id、官方唯一键、消息类型/来源/时间、binding revision、UID generation、正 int64 compat_msg_id、状态、正文受保护引用 |
-| delivery_attempts | inbox_id、目标 revision、尝试编号、时间、HTTP/网络结果、错误类别 |
-| outbox | id、binding/customer/generation、消息类型、内容/媒体引用、官方请求标识、状态/错误、created/updated |
-| media | 虚拟 media_id、tenant/binding、真实 media_id、用途、文件路径引用、hash/type/size、状态、expires_at |
-| operations | 管理员、对象、动作、幂等键哈希、参数摘要、PENDING/SUCCEEDED/FAILED/UNKNOWN、外部结果 |
-| audit_events | 时间、操作者、动作、对象、revision、脱敏差异、结果、关联 ID |
+| 企业配置与凭证 | 真实 corp_id、凭证引用/密文、状态、revision；真实与虚拟 token 分离 |
+| 客服账号与绑定 | 企业+open_kfid 唯一；真实资料/可见性；每账号最多一个 active binding；回调及虚拟凭证版本 |
+| 客户/会话/别名 | 企业+external_userid 范围；稳定 customer_id；binding、generation、官方状态、本地人工暂停；旧 UID 不可重用 |
+| 同步状态 | 固定 scope、cursor、待同步标记、受保护短期 token、下次尝试时间、最近成功/缺口状态 |
+| Inbox | 原始完整 msgid/时间/来源/类型；唯一去重键；正 int64 compat_msg_id；绑定/代际和投递结果 |
+| Outbox | 请求及内容受保护引用、绑定/代际、预算预留、状态、官方结果/消息标识、UNKNOWN/后续失败 |
+| 媒体 | 虚拟 ID、绑定/用途、真实 ID/本地受控路径、类型/大小/摘要、期限及活跃引用 |
+| 管理操作/审计 | 防重复键、参数摘要、对象/revision、结果、操作者、时间、必要脱敏差异 |
 
-审计和必要 UNKNOWN 证据不因账号删除级联删除。存量旧 UID 保留 tombstone 或等价不可重用证据，防止恢复后错误发送；不需要永远保留客户全文。
+可以把 token 缓存与凭证数据、待同步任务与游标、尝试摘要与消息记录合并存储；不要求原 v0.1 的每个逻辑对象单独一张表。审计和 UNKNOWN 不能因账号删除级联消失。没有必要永久保存客户全文，但旧别名不可重分配、去重安全期不能因清理而失效。
 
-## 2. 主键与隔离
+只缓存可重建的 access_token 时可用内存；需要跨重启立即撤销/追踪的绑定版本和权限必须持久化。不要为了少表丢掉唯一约束、状态及恢复依据。
 
-禁止全局仅按 open_kfid、external_userid、nickname 查询。API 服务先解析授权范围，再查实体；SQL 层查询条件包含 tenant/binding 范围。用户提供的 agentid/touser/media_id 都是不可信数据，不能推翻 token 作用域。
+## 2. 事务、并发与标识
 
-兼容 MsgId 使用稳定正 int64 序列或经验证的无冲突方案，存储唯一约束。外部字符串 msgid 完整保存，不转换成浮点数。管理 API 向 JavaScript 输出超安全整数范围的标识时用字符串；时间和原消息 ID 类型分别建模。
+原子边界：一页消息/事件+next_cursor；会话与别名创建；人工暂停/改绑+旧代际封锁；outbox+授权版本快照+预算预留；管理操作防重复登记。外部网络不在 SQLite 写锁内等待。
 
-## 3. 事务边界
+同 scope 同步和同会话发送资格在单进程串行裁决；SQLite 事务保证持久化不变量。启动互斥，第二实例直接拒绝运行，不设计可抢占的分布式 lease。意外中断的 POSTING/SENDING 置待判定，而不是所有任务无条件自动重试。
 
-必须原子完成：一页 Inbox+next_cursor；UID 创建+对应会话/代际登记；binding 修改+旧 revision/UID 封锁；outbox 创建+授权版本快照；管理操作幂等登记+状态写入。
+SQL 参数化且带授权企业/binding 范围；agentid、touser、media_id 不能推翻 token 范围。外部字符串 ID 完整保存；兼容 MsgId 只用经过验证的正 int64 唯一序列。输出到 JavaScript 的大整数用字符串，不能浮点截断。昵称不作为 ID、SQL 或授权依据。
 
-网络 I/O 不在数据库写锁内等待。涉及外部副作用时使用持久化 operation 与补偿/对账，而不是声称分布式回滚。并发 cursor/账号编辑使用 revision 比较；失败需刷新，不静默覆盖。
+迁移小型顺序脚本即可，失败不继续启动新版本接单。备份恢复及降级需要版本/数据一致性，不能把旧二进制直接套新 schema。
 
-启动时执行经测试的 schema 迁移；迁移失败不以新版本开始收消息。降级不盲目套旧二进制到新 schema，先维护模式和备份恢复演练。
+## 3. 配置分层
 
-## 4. 配置分层
-
-建议 `bridge.yaml` 仅包含进程、存储、安全和任务参数；真实企业、账号、绑定由数据库管理并可导出脱敏清单，避免同一字段同时由 YAML 和后台竞争控制。
+YAML 只放进程、网络、存储、安全及资源上限；企业/账号/绑定由数据库和后台管理，避免同字段双来源竞争。
 
 ```yaml
-# 目标配置示例，尚无可执行程序或加载器
+# 目标格式示意；当前没有配置加载器，不可当运行命令。
 server:
   public_listen: "127.0.0.1:8090"
   admin_listen: "127.0.0.1:8091"
@@ -58,51 +49,45 @@ security:
       port: 8081
       allowed_cidrs: ["10.20.0.0/16"]
 workers:
-  max_concurrency: 8
+  max_concurrency: 2
   shutdown_grace_seconds: 20
 retention:
   terminal_message_days: 7
   audit_days: 90
 ```
 
-并发 8、保留 7/90 天都是可调整的本地保护建议，不是客服/用户数量上限，也不是法规或腾讯规定。启动校验 unknown 字段、端口、URL、目录权限、密钥长度与保留策略；不能拼错字段还静默启动。
+2 个 worker、20 秒停机宽限、7/90 天为本地建议，不是账号上限、官方配额或法规。定义并校验排队容量、单文件大小、图片像素、总媒体/磁盘上限；实际数值按部署确认。未知字段、无效 URL/密钥、目录权限错误不静默忽略。
 
-租户启用前必须装载已核验的官方 policy（发送窗口、媒体限制、频控等）；关键未知约束不能默认无穷大。测试环境可显式使用 fake policy，界面明显标识不能用于生产。
+真实企业启用前确认相应窗口/预算/媒体 policy，未知限制不得取无穷大。测试 fake 使用合成 policy 并明确标记，不冒充官方沙箱。
 
-## 5. 凭证与信任边界
+## 4. 凭证和问答权限
 
-真实微信 secret、官方 access_token、回调 AES key 用外置秘密引用或主密钥加密保存；主密钥不放数据库同目录/同备份，不提交 Git。需要恢复导出的虚拟密钥应加密存储；仅用于认证比较的随机密钥/令牌可使用强哈希/HMAC 摘要并进行常量时间比较。
+真实 Secret、AES Key 和需要恢复导出的虚拟密钥用外置秘密引用或主密钥加密保存；主密钥与 DB/普通备份分开，不入 Git。仅用于比较的高熵随机 token/secret 可存强摘要并常量时间比较。不要自创密码学或把可恢复密钥只做不可逆哈希后又承诺导出。
 
-真实官方 Token 与兼容 Token 采用不同命名空间、生命周期和缓存，绝不互换。刷新并发 single-flight，每租户/绑定范围独立。停用/轮换撤销旧版本，并提供客户端缓存影响说明。
+真实与虚拟 token 独立缓存，刷新在各自范围合并并发；撤销绑定立即拒绝对应旧版本，客户端缓存影响见运维。公网 HTTPS，跨公网客户端回调用 TLS 或私有隧道；管理端不因公开回调而公开。
 
-公网流量经 HTTPS；内网 HTTP 只允许明确受信任的同机/受控网络，跨公网的 cc-connect 回调必须用反向代理 TLS 或私有隧道。管理员端不因公开微信回调而开放匿名访问。
+客户入口只允许问答数据，控制命令/配置别名/快捷执行路径另行封锁；客户端以项目级 admin_from、disabled_commands 等做纵深保护。禁止自然语言过滤冒充 OS 沙箱。Codex exec+suggest 仍可能执行读取命令；只有经过独立验证的工具/MCP/网络能力才能启用。
 
-## 6. SSRF 与回调安全
+**UID 隔离只解决会话路由，不等于文件访问隔离。** 同一个 OS 账户可能读到同项目其他附件、日志和会话文件。首版公共客服仅接入可共享资料；敏感客户文件未经实际隔离验证不得启用。使用低权限服务账户、只读资料及独立受保护运行目录，验证不泄漏凭证或他人内容，而不是引入大型多租户平台后自称安全。
 
-callback_url、头像 URL、媒体位置都可能成为 SSRF 入口。网关确实需要访问指定内网 cc-connect，所以不能一刀切禁止所有内网，也不能允许任意内网。
+## 5. SSRF 与媒体
 
-设计要求：仅授权管理员可设置；明确 host+port+允许 CIDR；拒绝用户名密码 URL、非 HTTP(S) 协议、metadata/link-local 地址及管理端口；DNS 解析结果校验并将连接固定到已校验目标，防重绑定；默认禁跳转，确需跳转逐跳重新检查。诊断测试也须使用同一防护。
+网关需要访问指定内网客户端，不一刀切拒绝内网，也不允许任意目标。callback_url 仅管理员配置，明确 host+port+允许 CIDR；拒绝 URL 用户名密码、非 HTTP(S)、metadata/link-local 和管理端口；校验 DNS 结果并连接到已校验地址，默认禁跳转，需要跳转时逐跳验证。测试连接沿用同一策略。
 
-不得让客户端 `media_id` 或上传文件名成为服务器文件路径；虚拟媒体 ID 只能查询授权映射。禁止通用 URL 代理、`file://`、任意磁盘读取和未授权下载。
+头像/媒体不做任意 URL 代理；优先授权 ID 或官方受控下载接口。临时文件不由文件名拼任意磁盘路径，不执行/解压上传内容，不跟随符号链接越界清理。图片检查压缩大小及解码像素，避免小文件巨像素耗尽内存。
 
-相关风险定义参考 [OWASP SSRF](https://owasp.org/www-community/attacks/Server_Side_Request_Forgery)；本文 allowlist 和内网部署取舍是本产品设计。
+入站媒体投递前准备好并保留活跃引用；客户端固定 JPEG 标记及不检查下载 HTTP 错误的限制必须按兼容契约处理。非 200 空响应不是“不生成坏附件”的保证，不能以此跳过异常测试。
 
-## 7. 回调、输入与内容保护
+## 6. 输入、日志与保留
 
-分别管理官方回调密钥与每个 cc-connect 回调密钥。验证签名、接收者、时间/重放策略；严格校验 Base64、密钥长、密文块长度、PKCS#7 补位每字节、长度前缀，使用成熟密码库，不能自己发明算法。
+回调两侧密钥分开，校验签名、接收方、Base64、密文块长、长度前缀和每个补位字节。重放策略适应合法重投，不将失败验证变成入库执行。XML/JSON 限大小/深度，XML 编码器安全转义，拒绝不需要的外部实体；HTML 默认转义。
 
-XML/JSON 请求限大小、限制深度/元素、拒绝异常外部实体用途；编码时转义正文/昵称/文件名。SQL 使用参数；HTML 默认转义。媒体按魔数/类型/大小检查，不自动执行、解压或发给 shell。必要临时文件最小权限，过期清理不跟随符号链接越界。
+日志只记脱敏 ID、状态和错误类别，禁止记录 query 中 secret/access_token/通知 token，默认无客户正文。cc-connect 日志也需要单独权限和保留策略，网关配置不能控制客户端全部日志。必要正文访问需鉴权和审计；不能使用第三方前端分析脚本收集配置。
 
-客户内容和昵称都视为不可信数据，不作为网关管理指令。需要转人工的命令须精确定义和白名单匹配，不允许运行任意管理 API。是否能修改项目由执行端权限控制，网关不能靠过滤几个关键词保证只读。
+媒体/正文到期可清理，但活跃任务和 UNKNOWN 证据不得被盲删；磁盘不足时拒绝新大文件并报告，不删除未处理数据腾空间。清理去重证据需覆盖实际可能重拉窗口及人工恢复策略。
 
-## 8. 保留、清理与备份
+## 7. 备份与验收
 
-仅保存恢复/诊断所需正文，单独加密或受权限保护。默认不在管理列表展示完整聊天；查看必要内容需权限并审计。过期客户资料可删除/匿名化，旧 UID tombstone 和去重证据保留至安全期，不能清理后导致重复投递。
+SQLite 使用一致性备份，例如[官方 Backup API](https://www.sqlite.org/backup.html)或受控停机后的完整快照；不直接复制运行中 DB 而忽略 WAL。备份包括媒体索引和程序/schema 版本，主密钥通过独立安全途径恢复。恢复旧备份先维护模式，防重复外部写入及旧 UID 复活。
 
-媒体保留期须覆盖有效待处理任务；有活跃引用/UNKNOWN 操作的记录不能被盲目定时清理。达到存储限制时拒绝新大文件并报警，不删除尚未处理数据腾空间。
-
-使用一致性备份机制；SQLite 可参考 [官方 Backup API](https://www.sqlite.org/backup.html)，不要只复制运行中的主 db 文件而忽略事务状态。备份、主密钥、媒体索引的恢复必须联合演练。测试用故障注入验证磁盘满、权限丢失、损坏及迁移失败。
-
-## 9. 安全验收
-
-跨绑定 gettoken/user/get/send/media/管理 API 越权全部拒绝；重复/错误签名不触发同步；非法补位/超长 XML 不崩溃；SSRF 不探测 metadata 或管理端；XSS 不执行；日志扫描无密钥/客户正文；危险删除有确认；每次轮换可解释恢复；外部调用失败不使凭证落盘到公开错误文件。
+测试跨 binding token/user/send/media/管理读取越权、SSRF/DNS 重绑定、输入错误、命令/文件权限、秘密日志、磁盘满、迁移失败、主密钥缺失、清理活跃文件和旧备份恢复。原 >95% 门禁不变；具体见测试文档及新增 AT-064/066/068/069。

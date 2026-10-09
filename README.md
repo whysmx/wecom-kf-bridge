@@ -1,72 +1,66 @@
 # WeCom KF Bridge
 
-微信客服与 cc-connect 之间的独立协议转换网关。
+微信客服与未修改的 cc-connect 之间的独立协议转换网关。
 
-> 文档版本：v0.1（首版详细设计） · 2026-10-09  
-> 当前状态：**仅需求、设计与验收文档；没有业务实现、运行程序或已通过的测试报告。**
+> 文档版本 v0.2 · 2026-10-09。当前只有需求、设计和评审文档，没有业务实现、运行程序或已通过的测试报告。
 
-## 项目定位
+## 定位与评审结论
 
 ```text
-微信客户
-  ↕ 微信客服
-企业微信官方回调与客服 API
-  ↕
-WeCom KF Bridge（本项目，待开发）
-  ↕ 企业微信自建应用兼容 HTTP API + 加密 XML 回调
-cc-connect（不修改源码）
-  ↕
-Codex 与现有项目资料
+个人微信客户
+    ↕ 微信客服回调 / 客服 API
+WeCom KF Bridge
+    ↕ 自建应用兼容 HTTP API / 加密 XML 回调
+cc-connect（不改源码，现有 WeChat Work 配置）
+    ↕
+Codex 与只读项目资料
 ```
 
-本项目不调用大模型、不运行 Codex、不管理代码工作目录，也不是 cc-connect 插件。它在 cc-connect 一侧兼容**企业微信自建应用 HTTP 模式**，不是智能机器人 WebSocket 模式。
+**主路线有固定源码支持，可按小项目实施；不等于已经完成真实微信联调。** 上游 `chenhg5/cc-connect@dfad19415a38b00b2c5c288610784d1a7eef337f` 已有 `api_base_url`，不必新增平台插件或修改客户端。微信接口另以 WxJava 固定源码交叉核对；证据和剩余核验项见[评审](docs/15-feasibility-review.md)与[依据登记](docs/14-sources-and-verification.md)。
 
-cc-connect 仍选择 **WeChat Work → 手动配置**。通过现有高级选项 `api_base_url` 指向网关，并填写网关生成的兼容凭证。反方向由网关 HTTP POST 到 cc-connect 的回调地址，因此网关必须能访问该地址；只修改 API 基础地址不会自动建立反向长连接。
+在 cc-connect 选择 WeChat Work 的 HTTP 自建应用配置，通过高级 `api_base_url` 指向网关并填入虚拟凭证。**网关还必须能访问 cc-connect 的回调地址**；API 基础地址不是反向隧道。不要改成智能机器人 WebSocket、个人微信扫码或 OneBot。
 
-以上配置与协议行为依据已检查的 [cc-connect 固定基线](https://github.com/whysmx/cc-connect/tree/848eb24d89bbd83d03c2afd0dbd94768fd86d5a8)，不是对所有版本的无条件兼容承诺。
+网关不调用模型、不运行 Codex、不管理项目目录或大模型凭证。现有模型及中转站配置保持在执行端。
 
-## 首版目标
+## 小项目实现范围
 
-- 不修改 cc-connect 源码或 Web 配置表单，复用项目、会话与 Codex 能力。
-- 客服账号按需配置，不写死客服账号、项目或用户数量。
-- 支持客服账号同步、创建、编辑、删除、客服链接、网关启停、项目回调绑定及凭证管理。
-- 将客户昵称映射为 cc-connect 的 `UserName`，身份与昵称分离，不因同名串会话。
-- 接入人工接管、消息去重、游标恢复、失败处理、媒体适配和必要审计。
-- **实现后，项目整体与各业务模块自动化语句覆盖率必须严格大于 95%；关键场景矩阵全部通过。** 当前文档阶段覆盖率为未测，不得宣称达标。
+推荐单实例、单进程、SQLite、同进程中文页面，首版按单企业部署。不引入 Redis、独立消息队列、微服务、租户运营平台或另一个客服工作台；不把逻辑模块强制拆成服务或大量数据库表。
 
-客服账号管理和客户资料查询是两类不同能力。用户指定的 [95166：客户基础信息](https://kf.weixin.qq.com/api/doc/path/95166) 用于客户昵称等信息，不能代替客服账号增删改查接口。
+保留真实客服账号同步、创建、编辑、删除、客服链接、项目绑定、启停和凭证管理；保留客户昵称、文本及既定媒体目标、人工接管、持久化去重、故障恢复和必要审计。账号、客户和绑定数量不写死，资源限额及平台配额仍须控制。
+
+原 R-001～R-024 及整体/每业务模块严格 >95% 的覆盖率要求保留。简化的是实现形态，不是删除功能、安全或测试。具体见 [ADR-0002](docs/adr/0002-small-project-baseline.md)。
+
+## 需要接受的边界
+
+HTTP 回调 200 不代表 AI 已处理；客户端会过滤早于本次进程启动时间减 2 秒的消息，重启后不保证补答历史问题。未知投递/发送默认不盲重试，不承诺端到端 exactly-once。
+
+长回答会拆成多次发送，必须考虑客服窗口与条数限制。人工接管抑制后续发送，但不能撤回已在途消息或停止正在运行的 Codex；恢复采用新代际 UID，会新建客户端上下文。
+
+只读 Codex 不等于禁止 cc-connect 的管理命令，也不等于客户间文件权限隔离。昵称缓存、媒体 MIME 和下载错误的客户端限制同样需要验证，不能宣称“完全继承且没有差异”。
 
 ## 文档导航
 
-| 文档 | 内容 |
+| 文档 | 用途 |
 |---|---|
-| [AGENTS.md](AGENTS.md) | 所有实现 Agent 必须遵守的边界、阅读顺序与停止条件 |
-| [文档总览](docs/00-document-map.md) | 文档优先级、术语、状态与阅读路径 |
-| [需求规格](docs/01-requirements.md) | 编号需求、首版范围与非目标 |
-| [总体架构](docs/02-architecture.md) | 模块、网络方向、部署与实现基线 |
-| [cc-connect 兼容契约](docs/03-cc-connect-contract.md) | 兼容接口、加密回调、身份和错误语义 |
-| [微信客服适配契约](docs/04-wechat-kf-contract.md) | 官方接口清单、核验任务及平台限制 |
-| [客服账号管理](docs/05-account-management.md) | 真实账号管理、项目绑定、权限与异常一致性 |
-| [客户身份与昵称](docs/06-customer-identity.md) | 客户资料、稳定标识、缓存与名称透传 |
-| [消息可靠性与人工接管](docs/07-delivery-and-handover.md) | 状态机、幂等、重试、迟到回复和已知边界 |
-| [管理界面与管理 API](docs/08-admin-ui-and-api.md) | 中文界面、操作流程与内部接口 |
-| [数据、配置与安全](docs/09-data-config-security.md) | 数据实体、事务、凭证、保留期与安全边界 |
-| [测试与覆盖率门禁](docs/10-testing-and-coverage.md) | >95% 统计口径、契约测试、故障注入与发布门禁 |
-| [实施任务与阶段](docs/11-implementation-plan.md) | 阶段依赖、任务交付与 Agent 协作 |
-| [部署运维](docs/12-deployment-runbook.md) | 现有表单配置、Windows 联调、监控和恢复 |
-| [需求—测试—验收矩阵](docs/13-acceptance-matrix.md) | 可追踪验收用例与完成定义 |
-| [依据与待核实清单](docs/14-sources-and-verification.md) | 已读源码、官方入口、不可读内容与阻塞项 |
-| [架构决策](docs/adr/0001-design-baseline.md) | HTTP 路线、最小管理后台、持久化与实现栈建议 |
-| [任务模板](docs/templates/task-brief.md) / [测试报告模板](docs/templates/test-report.md) | 防止需求漂移与虚报测试结果 |
+| [AGENTS](AGENTS.md) / [文档地图](docs/00-document-map.md) | 实现约束、阅读顺序与版本优先级 |
+| [需求规格](docs/01-requirements.md) | R-001～R-024，保留原功能范围 |
+| [总体架构](docs/02-architecture.md) | 单进程、网络方向与职责 |
+| [cc-connect 契约](docs/03-cc-connect-contract.md) | 虚拟接口、XML、分块及客户端限制 |
+| [微信客服契约](docs/04-wechat-kf-contract.md) | SDK 交叉证据、接口、权限与待实测项 |
+| [客服账号管理](docs/05-account-management.md) | 真实 CRUD、链接和绑定 |
+| [身份与昵称](docs/06-customer-identity.md) | 稳定身份、缓存和代际 |
+| [可靠性与人工接管](docs/07-delivery-and-handover.md) | 游标、重试、UNKNOWN 和人工栅栏 |
+| [中文管理](docs/08-admin-ui-and-api.md) | 简化页面及内部操作合同 |
+| [数据配置安全](docs/09-data-config-security.md) | 最小持久化、访问控制与恢复 |
+| [测试门禁](docs/10-testing-and-coverage.md) | >95% 统计口径与实际证据要求 |
+| [实施计划](docs/11-implementation-plan.md) | 先验证文本及安全，再补管理、媒体和发布 |
+| [部署运维](docs/12-deployment-runbook.md) | 网络、问答配置、Windows 与故障处理 |
+| [验收矩阵](docs/13-acceptance-matrix.md) / [追加验收](docs/15-feasibility-review.md) | AT-001～AT-069，当前均待执行 |
+| [依据登记](docs/14-sources-and-verification.md) / [技术评审](docs/15-feasibility-review.md) | 固定来源、发现、结论及未完成项 |
+| [ADR-0001](docs/adr/0001-design-baseline.md) / [ADR-0002](docs/adr/0002-small-project-baseline.md) | 原始决策和小项目修订 |
+| [任务模板](docs/templates/task-brief.md) / [测试报告](docs/templates/test-report.md) | 可按实际任务简短填写，不编造结果 |
+| [修改记录](CHANGELOG.md) | 文档修订历史 |
 
-## 状态与使用方式
+## 当前交付状态
 
-先读 `AGENTS.md`，再按实施计划逐项推进。需求和内部网关契约是本版设计约定；外部微信 API 的最新字段、权限、额度及状态转换必须完成官方资料核验和真实账号联调后才能标为已确认。
-
-本次未成功读取微信客服官方页面正文。文档明确列出这些待验证项，不用社区文章、旧聊天结论或模型记忆冒充官方最新契约。无法核实的项目阻塞相应功能发布，但不阻止先完成不依赖该信息的内部设计和测试框架。
-
-实现语言未由项目所有者指定。本版给出 Go、SQLite、内嵌轻量中文管理页的建议基线；在开始实现前用 ADR 固定工具链，不允许 Agent 在开发中自行换栈或扩展成微服务平台。
-
-## 本次交付边界
-
-仅建立中文文档基线，不包含业务代码、不创建真实微信客服账号、不修改现有 cc-connect 仓库、不配置生产凭证，也不声称 CI 或覆盖率门禁已经运行。
+本次完成设计评审和文档修订，未修改其他仓库、未操作真实客服账号、未部署或配置生产凭证。腾讯官方页面本次未取得可验证正文；不能把 SDK 注释中的数字或测试 fake 当作最新官方政策。外部契约可按当前能力切片核验，真实功能发布前必须完成相应企业权限及接口联调。
