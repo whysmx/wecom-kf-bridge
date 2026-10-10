@@ -98,3 +98,30 @@ func TestBlockOutboxIsCompareAndSet(t *testing.T) {
 		t.Fatal("budget released twice")
 	}
 }
+
+// #43: an outbox whose binding's kf account is no longer ACTIVE cannot send.
+func TestMissingAccountBlocksSends(t *testing.T) {
+	s, c := faultStore(t)
+	ctx := context.Background()
+	b, _ := s.Binding(ctx, "b1")
+	if err := s.UpsertAccount(ctx, KFAccount{OpenKfID: b.OpenKfID, Name: "n", Status: AccountActive}); err != nil {
+		t.Fatal(err)
+	}
+	o1, _ := s.CreateOutbox(ctx, OutboxMessage{CustomerID: c.ID, Generation: c.Generation, UID: c.UID, Body: "a", BudgetUnits: 1})
+	o2, _ := s.CreateOutbox(ctx, OutboxMessage{CustomerID: c.ID, Generation: c.Generation, UID: c.UID, Body: "b", BudgetUnits: 1})
+	if _, err := s.MarkOutboxSending(ctx, o1.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.MarkMissingAccounts(ctx, []string{"other"}); err != nil || n != 1 {
+		t.Fatal(n, err)
+	}
+	if _, err := s.MarkOutboxSending(ctx, o2.ID); !errors.Is(err, ErrBindingInactive) {
+		t.Fatal("send allowed:", err)
+	}
+	if err := s.SendGuarded(ctx, o1.ID, func() error { t.Fatal("sent"); return nil }); !errors.Is(err, ErrBindingInactive) {
+		t.Fatal("in-flight chunk allowed:", err)
+	}
+	if n, _ := s.MarkMissingAccounts(ctx, nil); n != 0 {
+		t.Fatal("already unknown re-marked")
+	}
+}

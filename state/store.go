@@ -1224,7 +1224,8 @@ func (s *Store) openOutbox(o OutboxMessage, err error) (OutboxMessage, error) {
 // with no fence over this generation, and its binding is active at the
 // revision the row was admitted under.
 const sendable = `EXISTS(SELECT 1 FROM customers c WHERE c.id=outbox.customer_id AND c.generation=outbox.generation AND c.uid=outbox.uid AND c.state='AI_ELIGIBLE' AND c.fence_generation<=c.generation)
- AND EXISTS(SELECT 1 FROM bindings b WHERE b.id=outbox.binding_id AND b.active=1 AND b.revision=outbox.binding_revision)`
+ AND EXISTS(SELECT 1 FROM bindings b WHERE b.id=outbox.binding_id AND b.active=1 AND b.revision=outbox.binding_revision)
+ AND NOT EXISTS(SELECT 1 FROM bindings b JOIN kf_accounts k ON k.open_kfid=b.open_kfid WHERE b.id=outbox.binding_id AND k.status!='ACTIVE')`
 
 // MarkOutboxSending is a compare-and-set: the row enters SENDING only if,
 // in the same statement, it is still CREATED/VALIDATED and sendable. A
@@ -1275,6 +1276,9 @@ func (s *Store) unsendableReason(ctx context.Context, o OutboxMessage) error {
 	}
 	if !b.Active || b.Revision != o.BindingRevision {
 		return ErrBindingInactive
+	}
+	if a, err := s.Account(ctx, b.OpenKfID); err == nil && a.Status != AccountActive {
+		return ErrBindingInactive // kf account missing/deleted upstream (#43)
 	}
 	return ErrConflict
 }

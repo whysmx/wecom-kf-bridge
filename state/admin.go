@@ -134,6 +134,24 @@ type Operation struct {
 	Location string
 }
 
+// MarkMissingAccounts flags every ACTIVE account absent from a complete
+// official list as UNKNOWN (#43); sends and new bindings for it are then
+// refused until a later sync sees it again.
+func (s *Store) MarkMissingAccounts(ctx context.Context, present []string) (int, error) {
+	q := `UPDATE kf_accounts SET status=?,revision=revision+1,updated_at=? WHERE status=?`
+	args := []any{AccountUnknown, unix(s.now()), AccountActive}
+	if len(present) > 0 {
+		q += ` AND open_kfid NOT IN (` + placeholders(len(present)) + `)`
+		args = append(args, toArgs(present)...)
+	}
+	r, err := s.db.ExecContext(ctx, q, args...)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := r.RowsAffected()
+	return int(n), nil
+}
+
 // BeginOperation reserves an Idempotency-Key. It returns (nil, nil) when
 // the caller should execute; an earlier completed operation with the same
 // parameters is returned for replay. Different parameters are refused.

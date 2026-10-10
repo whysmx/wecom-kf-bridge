@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/whysmx/wecom-kf-bridge/state"
+	"github.com/whysmx/wecom-kf-bridge/wecom"
 )
 
 // #39: diagnostics only list and mark this enterprise's rows.
@@ -109,5 +110,58 @@ func TestRotationRollsBack(t *testing.T) {
 	raw, exp, _ := e.st.BindingSecret(ctx, "b1")
 	if raw == old || exp || !strings.Contains(raw, `"7"`) {
 		t.Fatal("rotation result", raw, exp)
+	}
+}
+
+// #43: accounts absent from a complete official list become UNKNOWN;
+// new bindings and sends for them are refused; a partial sync changes nothing.
+func TestSyncMarksMissingAccounts(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	seedAccount(t, e, "wk1")
+	seedAccount(t, e, "wk2")
+	cl := e.login()
+	// partial failure: nothing marked
+	e.kf.accounts = make([]wecom.Account, 150)
+	for i := range e.kf.accounts {
+		e.kf.accounts[i] = wecom.Account{OpenKfID: "x" + itoa64(int64(i)), Name: "n"}
+	}
+	e.kf.listErr[100] = errLost
+	cl.post("/admin/accounts/sync", nil)
+	if a, _ := e.st.Account(ctx, "wk1"); a.Status != state.AccountActive {
+		t.Fatal("partial sync marked accounts")
+	}
+	delete(e.kf.listErr, 100)
+	e.kf.accounts = []wecom.Account{{OpenKfID: "wk2", Name: "n"}}
+	cl.post("/admin/accounts/sync", nil)
+	if !strings.Contains(cl.flash(), "1 个本地账号不在官方列表中") {
+		t.Fatal(cl.flash())
+	}
+	if a, _ := e.st.Account(ctx, "wk1"); a.Status != state.AccountUnknown {
+		t.Fatal("missing account still ACTIVE", a.Status)
+	}
+	if a, _ := e.st.Account(ctx, "wk2"); a.Status != state.AccountActive {
+		t.Fatal("present account changed")
+	}
+	if w := cl.post("/admin/bindings/create", url.Values{"id": {"b5"}, "open_kfid": {"wk1"}, "project_id": {"p"}, "callback_url": {"http://cc.internal:1/"}, "agent_id": {"1"}}); w.Code != http.StatusBadRequest {
+		t.Fatal("binding created for missing account", w.Code)
+	}
+	// reappearing restores it
+	e.kf.accounts = []wecom.Account{{OpenKfID: "wk1", Name: "n"}, {OpenKfID: "wk2", Name: "n"}}
+	cl.post("/admin/accounts/sync", nil)
+	if a, _ := e.st.Account(ctx, "wk1"); a.Status != state.AccountActive {
+		t.Fatal("reappeared account not restored")
+	}
+	// empty official list marks all
+	e.kf.accounts = nil
+	cl.post("/admin/accounts/sync", nil)
+	if a, _ := e.st.Account(ctx, "wk2"); a.Status != state.AccountUnknown {
+		t.Fatal("empty list")
+	}
+	e.st.DB().Exec(`UPDATE kf_accounts SET status='ACTIVE'`)
+	e.kf.accounts = []wecom.Account{{OpenKfID: "wk2", Name: "n"}}
+	trig(t, e, "m1", "BEFORE UPDATE ON kf_accounts WHEN NEW.status='UNKNOWN'")
+	if w := cl.post("/admin/accounts/sync", nil); w.Code != http.StatusServiceUnavailable {
+		t.Fatal(w.Code)
 	}
 }

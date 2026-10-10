@@ -55,13 +55,25 @@ func (c *Console) accountsSync(r *http.Request, _ *session) result {
 		}
 	}
 	now := c.cfg.Clock()
+	ids := make([]string, 0, len(all))
 	for _, a := range all {
 		if err := c.cfg.Store.UpsertAccount(ctx, state.KFAccount{OpenKfID: a.OpenKfID, Name: a.Name, URL: a.URL, Status: state.AccountActive, SyncedAt: now}); err != nil {
 			return result{status: http.StatusServiceUnavailable, flash: "存储不可用"}
 		}
+		ids = append(ids, a.OpenKfID)
 	}
-	c.audit(r, "kf_account", "*", "sync", "ok", fmt.Sprintf("%d accounts", len(all)), 0)
-	return result{location: "/admin/accounts", flash: fmt.Sprintf("已同步 %d 个客服账号", len(all))}
+	// The list is complete (every page succeeded): accounts no longer in it
+	// must not stay ACTIVE (#43).
+	missing, err := c.cfg.Store.MarkMissingAccounts(ctx, ids)
+	if err != nil {
+		return result{status: http.StatusServiceUnavailable, flash: "存储不可用"}
+	}
+	c.audit(r, "kf_account", "*", "sync", "ok", fmt.Sprintf("%d accounts, %d missing", len(all), missing), 0)
+	msg := fmt.Sprintf("已同步 %d 个客服账号", len(all))
+	if missing > 0 {
+		msg += fmt.Sprintf("；%d 个本地账号不在官方列表中，已标记 UNKNOWN（停止新建绑定与发送，请核实）", missing)
+	}
+	return result{location: "/admin/accounts", flash: msg}
 }
 
 func (c *Console) accountCreate(r *http.Request, _ *session) result {
