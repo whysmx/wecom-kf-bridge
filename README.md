@@ -75,14 +75,13 @@ export WECOM_KF_BRIDGE_MASTER_KEY=…   # 32 字节，见配置文档
 | [CHANGELOG.md](CHANGELOG.md) | 版本说明（亦用于 GitHub Release） |
 | [维护说明](AGENTS.md) | 给维护者的简短约定 |
 
-历史需求/契约/实施手册与评审修复明细在 [docs/archive/](docs/archive/)，一般介绍项目无需阅读。
-
 ## 已知限制（摘要）
 
-- 未完成真实企业微信联调；UNKNOWN 结果默认不盲重试。
+- 未完成真实企业微信全链路联调，**非生产就绪**；UNKNOWN 结果默认不盲重试。
 - 人工接管不能撤回已在途消息，也不能停止已在运行的 Codex；恢复会换代际 UID。
+- 转人工目前只到「待接入池」，不支持指定接待人员；状态 UNKNOWN 的客户需先重新转人工再恢复 AI。
 - 长回复会分块发送，受客服会话窗口与条数限制。
-- 更多暂缓项见 [docs/archive/REVIEW_FIXES.md](docs/archive/REVIEW_FIXES.md) 文末「暂缓项」。
+- 绑定虚拟凭证入库后以数据库为准；配置文件里的对应 env 仅首次初始化需要。
 
 ## 发布
 
