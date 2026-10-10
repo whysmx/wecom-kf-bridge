@@ -14,7 +14,8 @@ import (
 )
 
 func encryptRawForTest(k, plain []byte) string {
-	p := pkcs7(plain, aes.BlockSize*2)
+	n := 32 - len(plain)%32
+	p := append(append([]byte(nil), plain...), bytes.Repeat([]byte{byte(n)}, n)...)
 	b, _ := aes.NewCipher(k)
 	out := make([]byte, len(p))
 	cipher.NewCBCEncrypter(b, k[:aes.BlockSize]).CryptBlocks(out, p)
@@ -70,35 +71,20 @@ func TestRootHelpersAndAdapters(t *testing.T) {
 	if cs.receiver() != "r" {
 		t.Fatal()
 	}
-	if _, err := cs.block(); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := cs.Encrypt([]byte{0xff}); err == nil {
 		t.Fatal("utf8")
 	}
-	if _, err := (WeComCrypto{AESKey: k, Rand: badReader{}}).Encrypt([]byte("x")); err == nil {
-		t.Fatal("rand")
-	}
-	if len(pkcs7(make([]byte, 16), 16)) != 32 {
-		t.Fatal("pad full")
-	}
-	if _, err := (WeComCrypto{AESKey: 123}).block(); err == nil {
+	if _, err := (WeComCrypto{AESKey: 123}).Encrypt([]byte("x")); err == nil {
 		t.Fatal("type")
 	}
-	if _, err := (WeComCrypto{}).block(); err == nil {
+	if _, err := (WeComCrypto{}).Encrypt([]byte("x")); err == nil {
 		t.Fatal("nil key")
 	}
-	if _, err := (WeComCrypto{AESKey: []byte{1}}).block(); err == nil {
+	if _, err := (WeComCrypto{AESKey: []byte{1}}).Encrypt([]byte("x")); err == nil {
 		t.Fatal("short")
 	}
-	if _, err := unpkcs7(nil, 16); err == nil {
-		t.Fatal("pad")
-	}
-	if _, err := unpkcs7(make([]byte, 16), 16); err == nil {
-		t.Fatal("pad2")
-	}
-	if len(pkcs7([]byte("x"), 16)) != 16 {
-		t.Fatal("pkcs")
+	if _, err := (WeComCrypto{AESKey: k, Receiver: "r", Rand: badReader{}}).Encrypt([]byte("x")); err == nil {
+		t.Fatal("rand")
 	}
 	if _, err := cs.Decrypt("bad"); err == nil {
 		t.Fatal("decrypt")

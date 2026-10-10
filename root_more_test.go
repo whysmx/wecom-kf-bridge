@@ -38,9 +38,6 @@ func TestRootCryptoFallbackAndMalformedPadding(t *testing.T) {
 	if _, err := c.Decrypt(malformedCBCForTest(key)); err == nil {
 		t.Fatal("malformed padding accepted")
 	}
-	if _, err := unpkcs7(append(make([]byte, 15), 2), 16); err == nil {
-		t.Fatal("mismatched padding accepted")
-	}
 }
 
 func TestRootSendAndCallbackValidationGaps(t *testing.T) {
