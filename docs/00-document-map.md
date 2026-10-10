@@ -21,6 +21,7 @@
 | [验收](13-acceptance-matrix.md) | 业务验收及多客户并发用例 |
 | [依据](14-sources-and-verification.md) | 固定来源、证据等级、剩余核验 |
 | [评审](15-feasibility-review.md) | 当前技术结论、边界及兼容验收 |
+| [单企业管理后台](17-single-enterprise-admin-design.md) | 单企业后台页面、路由、鉴权与分期 |
 | [架构决策](adr/0001-design-baseline.md) | 唯一现行实现基线与取舍 |
 
 ## 优先级与维护
