@@ -4,6 +4,33 @@
 
 ## [未发布]
 
+## v0.1.4 - 2026-10-10
+
+### 修复
+
+- 绑定内客户换代持有与发送相同的绑定锁，换代不会插在发送检查与出站调用之间（#30）。
+- `BlockOutbox` 改为 CAS，不会覆盖 SENDING/UPSTREAM_ACCEPTED，预算仅在真实转移时释放一次（#31）。
+- 删除客服账号（含结果未知）时停用关联绑定、吊销 cc-connect 令牌并冻结旧客户 UID（#32）。
+- 转人工/恢复 AI 先调用官方 `service_state/trans` 并经 `service_state/get` 回读确认后才改本地状态；结果不确定标记 UNKNOWN 并显示（#33）。
+- SQLite 改用连接钩子初始化每个连接（`foreign_keys`、`busy_timeout`），并设置连接池上限（#38）。
+
+### 安全
+
+- 后台 Cookie 默认 Secure；新增 `admin.insecure_cookie`，仅回环监听可用（修复示例配置登录循环）（#34）。
+- `wecom.api_base_url` 强制 https，`wecom.allow_insecure_http` 仅供测试并在启动时告警（#35）。
+- `security.callback_targets` 的 host/端口/CIDR 启动时严格校验，非法即启动失败（#36）。
+- `runtime.Build` 自行应用默认值并校验配置，空企业列表不再 panic（#37）。
+
+### 变更（配置）
+
+- 用 http 访问后台需显式设置 `admin.insecure_cookie: true`（且仅限回环）；否则 `admin.origin` 必须为 https。
+- 指向 http 的 WeCom API（如本地 fake）需设置 `wecom.allow_insecure_http: true`。
+- 后台转人工/恢复依赖 `wecom.service_state_map` 中 WAITING_HUMAN / AI_ELIGIBLE 对应的官方值。
+
+### 已知不足
+
+- 与 v0.1.3 相同：尚未完成真实企业微信联调，非生产就绪。
+
 ## v0.1.3 - 2026-10-10
 
 ### 修复

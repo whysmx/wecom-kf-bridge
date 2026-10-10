@@ -94,3 +94,19 @@
 - 转人工/恢复已先调官方 `service_state/trans` 并 `get` 回读再改本地（拒绝则本地不变；结果未知则本地 UNKNOWN 并暂停 AI）；删除客服账号成功或 UNKNOWN 时停用关联绑定、吊销令牌并冻结旧客户 UID（#32/#33）。
 - 诊断“查看正文”在 POST 响应中直接显示，不走 PRG（避免正文进入 URL 或会话）。
 - §7 最后一项（真实测试企业联调账号 CRUD、链接、客服状态、接管/恢复）未执行，不能据此标为可发布。
+
+## 第三轮评审（#30-#38，v0.1.4）
+
+| # | 问题 | 修复 | 文件 | 测试 | 提交 |
+|---|------|------|------|------|------|
+| 30 | `RotateBindingCustomers` 不持绑定锁，可在 `SendGuarded` 检查通过后完成换代，旧代际仍可发出 | 换代持有与 `SendGuarded` 相同的 `binding:<id>` 锁，与每个出站分块互斥 | state/admin.go | `TestRotateBindingCustomersSerialisesWithSendGuarded`（发送进行中换代被阻塞，之后旧代际发送返回 `ErrStaleGeneration`） | 8ca267b |
+| 31 | `BlockOutbox` 先读后无条件 UPDATE，可能把 SENDING/UPSTREAM_ACCEPTED 改成 BLOCKED 并错误释放预算 | 单写事务内两条语句都以 `state IN ('CREATED','VALIDATED')` 为条件（CAS），预算仅在本次转移真实发生且 `budget_reserved=1` 时释放；失败路径在事务内读状态（避免单连接池死锁） | state/store.go | `TestBlockOutboxIsCompareAndSet`（SENDING/UPSTREAM_ACCEPTED 不被覆盖、并发 block vs mark-sending 预算至多释放一次、重复 block 不重复释放） | 8ca267b |
+| 32 | 删除客服账号只标记 DELETED，关联绑定仍可转发 | 删除成功或结果未知（UNKNOWN）时：停用该账号的全部绑定（revision+1 栅栏在途发送）、`Runtime.ApplyBinding` 吊销 cc-connect 令牌、`RotateBindingCustomers` 冻结旧 UID；失败在提示中显示警告 | admin/actions.go | 修正原 `admin_test.go` 断言（绑定须停用、revision=2、旧 UID stale、其他企业绑定不变）；`TestAccountDeleteFreezesBindings`；runtime E2E：删除后旧 token 调 `user/get` 被拒、gettoken 被拒 | 1487115 |
+| 33 | 转人工/恢复只改 SQLite | 先调官方 `service_state/trans`（目标值取自 `wecom.service_state_map` 中 WAITING_HUMAN / AI_ELIGIBLE 对应的官方值，不猜），再 `service_state/get` 回读确认，确认后才改本地；官方明确拒绝则本地不变；结果不确定（网络错误/回读失败/回读不符）时转人工按失败安全暂停 AI 并标记 UNKNOWN，恢复保持暂停并标记 UNKNOWN，页面显示 | admin/admin.go、admin/actions.go、runtime/admin.go | `TestHandoverRequiresOfficialConfirmation`、`TestHandoverNeedsMappedOfficialState`（fake WeCom）；runtime E2E 经 fake 官方 API 转人工/恢复 | 1487115 |
+| 34 | Cookie 恒为 Secure，但示例用 `http://127.0.0.1:8091` 导致登录循环 | 新增 `admin.insecure_cookie`：仅当 `admin.listen` 为回环地址时允许；未开启时 `admin.origin` 必须为 https；默认 Secure；`config.example.json` 显式开启（回环明文） | runtime/config.go、admin/admin.go、config.example.json | `TestReview3ConfigHardening`、`TestInsecureCookieOption`、`TestExampleConfigIsValid` | 6dfc566 |
+| 35 | WeCom API base 允许 http:// | `Validate` 强制 https；`wecom.allow_insecure_http` 显式放行（测试/fake），启动时记录 `SECURITY_WARNING_insecure_wecom_api` | runtime/config.go、runtime/gateway.go | `TestReview3ConfigHardening`、`TestInsecureAPIWarns` | 6dfc566 |
+| 36 | `callback_targets` 端口和 CIDR 未在启动时校验，非法 CIDR 被静默忽略 | 启动严格校验：host 非空、端口 1-65535、`allowed_cidrs` 非空且每项可解析，否则启动失败 | runtime/config.go | `TestReview3ConfigHardening` | 6dfc566 |
+| 37 | 导出的 `runtime.Build` 跳过默认值和校验，`Enterprises` 为空时 `cfg.Enterprises[0]` panic | `Build` 自行执行 `defaults()` + `Validate()`（admin 要求恰好一个企业，因此不会越界） | runtime/gateway.go | `TestReview3ConfigHardening`（每个非法配置 Build 返回错误不 panic；手写配置自动补默认值） | 6dfc566 |
+| 38 | PRAGMA 只作用于取得的连接 | 改用 modernc 驱动的连接钩子 `RegisterConnectionHook`：经 `sqlite` 驱动打开的每个连接（`OpenWithOptions` 及调用方传给 `New` 的 `*sql.DB`）都执行 `foreign_keys=ON; busy_timeout=5000`；`OpenWithOptions` 设连接上限 8（`New` 保留调用方设置） | state/store.go | `TestEveryPooledConnectionIsInitialised`（同时持有 8 个连接逐一检查 foreign_keys=1、busy_timeout=5000，覆盖两种入口） | 8ca267b |
+
+**此前一次性 admin 包测试失败**：在 CPU 负载下（并行运行 state/runtime race 测试）以 `-race -count=10 -cpu=1,2,8` 运行 admin 包 30 次未复现。该失败发生在 v0.1.3 连接级 PRAGMA 修复之前，最可能的原因是非首个连接缺失 busy_timeout 导致的 SQLITE_BUSY；#38 进一步把初始化改为连接钩子覆盖所有入口。
