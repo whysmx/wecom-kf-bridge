@@ -28,6 +28,10 @@ type KF interface {
 	UpdateAccount(ctx context.Context, openKfID, name, mediaID string) error
 	DeleteAccount(ctx context.Context, openKfID string) error
 	ContactURL(ctx context.Context, openKfID, scene string) (string, error)
+	// TransServiceState / ServiceState: official reception state
+	// (/cgi-bin/kf/service_state/trans and /get).
+	TransServiceState(ctx context.Context, openKfID, externalUserID string, state int) error
+	ServiceState(ctx context.Context, openKfID, externalUserID string) (int, error)
 }
 
 // Credentials are the virtual cc-connect credentials of a binding.
@@ -74,11 +78,15 @@ type Config struct {
 	CompanyName    string
 	CorpID         string
 	Settings       []Setting
-	SessionTTL     time.Duration
-	StepUpTTL      time.Duration
-	MaxSessions    int
-	Clock          func() time.Time
-	Random         io.Reader
+	// ServiceStateMap maps official service_state values to internal states
+	// (wecom.service_state_map). Handover transfers to the value mapped to
+	// WAITING_HUMAN, recovery to AI_ELIGIBLE.
+	ServiceStateMap map[int]string
+	SessionTTL      time.Duration
+	StepUpTTL       time.Duration
+	MaxSessions     int
+	Clock           func() time.Time
+	Random          io.Reader
 }
 
 type Console struct {

@@ -220,6 +220,24 @@ func (k consoleKF) ContactURL(ctx context.Context, id, scene string) (string, er
 	return resp.URL, err
 }
 
+func (k consoleKF) TransServiceState(ctx context.Context, id, ext string, st int) error {
+	tok, err := k.tokens.get(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = k.client.TransServiceState(ctx, tok, wecom.ServiceStateRequest{OpenKfID: id, ExternalUserID: ext, ServiceState: st})
+	return err
+}
+
+func (k consoleKF) ServiceState(ctx context.Context, id, ext string) (int, error) {
+	tok, err := k.tokens.get(ctx)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := k.client.GetServiceState(ctx, tok, wecom.ServiceStateRequest{OpenKfID: id, ExternalUserID: ext})
+	return resp.ServiceState, err
+}
+
 func (g *Gateway) buildAdmin(cfg Config) (http.Handler, error) {
 	hash, err := secretEnv(cfg.Admin.PasswordHashEnv)
 	if err != nil {
@@ -256,8 +274,9 @@ func (g *Gateway) buildAdmin(cfg Config) (http.Handler, error) {
 	c, err := admin.New(admin.Config{
 		Store: g.Store, KF: consoleKF{client: g.adapter.clients[e.ID], tokens: g.adapter.tokens[e.ID]}, Runtime: consoleRuntime{g: g, cfg: cfg},
 		PasswordHash: []byte(hash), Origin: origin, EnterpriseID: e.ID, CompanyName: cfg.Admin.CompanyName, CorpID: e.CorpID, Settings: settings,
-		InsecureCookie: cfg.Admin.InsecureCookie,
-		SessionTTL:     time.Duration(cfg.Admin.SessionTTLMinutes) * time.Minute, MaxSessions: cfg.Admin.MaxSessions,
+		InsecureCookie:  cfg.Admin.InsecureCookie,
+		ServiceStateMap: g.adapter.states,
+		SessionTTL:      time.Duration(cfg.Admin.SessionTTLMinutes) * time.Minute, MaxSessions: cfg.Admin.MaxSessions,
 	})
 	if err != nil {
 		return nil, err

@@ -160,17 +160,53 @@ func (c *Console) accountDelete(r *http.Request, s *session) result {
 		return result{status: http.StatusForbidden, flash: "危险确认无效或已过期，请重新打开详情页"}
 	}
 	err := c.cfg.KF.DeleteAccount(r.Context(), a.OpenKfID)
-	switch {
-	case err == nil:
-		_, _ = c.cfg.Store.UpdateAccountLocal(r.Context(), a.OpenKfID, a.Revision, func(x *state.KFAccount) { x.Status = state.AccountDeleted })
-		c.audit(r, "kf_account", a.OpenKfID, "delete", "ok", "", a.Revision)
-		return result{location: "/admin/accounts", flash: "已删除微信客服账号（转发绑定与审计保留）"}
-	case definitive(err):
+	if err != nil && definitive(err) {
 		c.audit(r, "kf_account", a.OpenKfID, "delete", "rejected", err.Error(), a.Revision)
 		return result{location: "/admin/accounts?id=" + a.OpenKfID, flash: "微信拒绝删除：" + err.Error()}
-	default:
-		return c.markUnknown(r, a, "delete")
 	}
+	// Deleted or possibly deleted: stop forwarding for this account now.
+	n, ferr := c.freezeAccountBindings(r, a.OpenKfID)
+	warn := ""
+	if ferr != nil {
+		warn = "；警告：停用关联绑定失败，请在转发绑定页手动停用"
+	}
+	if err != nil {
+		res := c.markUnknown(r, a, "delete")
+		res.flash += fmt.Sprintf("；已停用 %d 个关联绑定", n) + warn
+		return res
+	}
+	_, _ = c.cfg.Store.UpdateAccountLocal(r.Context(), a.OpenKfID, a.Revision, func(x *state.KFAccount) { x.Status = state.AccountDeleted })
+	c.audit(r, "kf_account", a.OpenKfID, "delete", "ok", fmt.Sprintf("bindings disabled %d", n), a.Revision)
+	return result{location: "/admin/accounts", flash: fmt.Sprintf("已删除微信客服账号；已停用 %d 个关联绑定、吊销其令牌并冻结旧客户 UID（审计保留）", n) + warn}
+}
+
+// freezeAccountBindings disables every binding of a deleted account (#32):
+// revision bump fences pending sends, ApplyBinding revokes cc-connect
+// tokens, and rotating customers makes every old UID stale.
+func (c *Console) freezeAccountBindings(r *http.Request, openKfID string) (int, error) {
+	all, err := c.cfg.Store.Bindings(r.Context())
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, b := range all {
+		if b.EnterpriseID != c.cfg.EnterpriseID || b.OpenKfID != openKfID {
+			continue
+		}
+		nb, err := c.cfg.Store.UpdateBinding(r.Context(), b.ID, b.Revision, func(x *state.Binding) { x.Active = false })
+		if err != nil {
+			return n, err
+		}
+		if err := c.cfg.Runtime.ApplyBinding(r.Context(), nb, nil); err != nil {
+			return n, err
+		}
+		if _, err := c.cfg.Store.RotateBindingCustomers(r.Context(), b.ID); err != nil {
+			return n, err
+		}
+		c.audit(r, "binding", b.ID, "disable_on_account_delete", "ok", fmt.Sprintf("revision %d -> %d", b.Revision, nb.Revision), b.Revision)
+		n++
+	}
+	return n, nil
 }
 
 // ---- 转发绑定 ----
@@ -360,32 +396,115 @@ func (c *Console) customer(r *http.Request) (state.Customer, *result) {
 	return cu, nil
 }
 
+// officialTarget returns the service_state mapped to an internal state.
+func (c *Console) officialTarget(internal string) (int, bool) {
+	best, ok := 0, false
+	for k, v := range c.cfg.ServiceStateMap {
+		if v == internal && (!ok || k < best) {
+			best, ok = k, true
+		}
+	}
+	return best, ok
+}
+
+func (c *Console) mapped(n int) string {
+	if v, ok := c.cfg.ServiceStateMap[n]; ok {
+		return v
+	}
+	return state.CustomerUnknown
+}
+
+// transfer calls service_state/trans, then reads back service_state/get.
+// It returns the confirmed internal state, whether the official result is
+// certain, and a definitive rejection (nothing changed upstream).
+func (c *Console) transfer(r *http.Request, cu state.Customer, internal string, accept ...string) (string, bool, error) {
+	target, ok := c.officialTarget(internal)
+	if !ok {
+		return "", true, errors.New("service_state_map 未配置 " + internal + " 对应的官方状态")
+	}
+	b, err := c.cfg.Store.Binding(r.Context(), cu.BindingID)
+	if err != nil {
+		return "", true, errors.New("绑定不存在")
+	}
+	if err := c.cfg.KF.TransServiceState(r.Context(), b.OpenKfID, cu.ExternalUserID, target); err != nil {
+		if definitive(err) {
+			return "", true, err
+		}
+		return "", false, nil
+	}
+	got, err := c.cfg.KF.ServiceState(r.Context(), b.OpenKfID, cu.ExternalUserID)
+	if err != nil {
+		return "", false, nil
+	}
+	m := c.mapped(got)
+	for _, a := range accept {
+		if m == a {
+			return m, true, nil
+		}
+	}
+	return m, false, nil
+}
+
+// customerHandover transfers the session officially first and only then
+// pauses AI locally. If the official result is uncertain, AI is paused
+// (fail-safe) and the customer is marked UNKNOWN.
 func (c *Console) customerHandover(r *http.Request, _ *session) result {
 	cu, res := c.customer(r)
 	if res != nil {
 		return *res
 	}
+	official, certain, rejected := c.transfer(r, cu, state.CustomerWaitingHuman, state.CustomerWaitingHuman, state.CustomerHuman)
+	if rejected != nil {
+		c.audit(r, "customer", cu.ID, "handover", "rejected", rejected.Error(), cu.Revision)
+		return result{location: "/admin/customers?q=" + cu.ID, flash: "转人工失败（官方未变更）：" + rejected.Error()}
+	}
+	local := state.CustomerHuman
+	if !certain {
+		official, local = state.CustomerUnknown, state.CustomerUnknown
+	}
 	if _, err := c.cfg.Store.BeginHandover(r.Context(), cu.ID, "admin_handover"); err != nil {
 		return result{status: http.StatusConflict, flash: "转人工失败：" + err.Error()}
 	}
-	if err := c.cfg.Store.SetHandoverStatus(r.Context(), cu.ID, state.CustomerHuman, "admin_handover"); err != nil {
+	if err := c.cfg.Store.SetHandoverStatus(r.Context(), cu.ID, local, "admin_handover"); err != nil {
 		return result{status: http.StatusServiceUnavailable, flash: "转人工状态保存失败"}
 	}
-	c.audit(r, "customer", cu.ID, "handover", "ok", "", cu.Revision)
-	return result{location: "/admin/customers?q=" + cu.ID, flash: "已转人工（本地暂停 AI 发送）"}
+	_ = c.cfg.Store.SetOfficialStatus(r.Context(), cu.ID, official)
+	if !certain {
+		c.audit(r, "customer", cu.ID, "handover", "unknown", "", cu.Revision)
+		return result{location: "/admin/customers?q=" + cu.ID, flash: "官方转接结果未知（UNKNOWN）：已在本地暂停 AI，请在企业微信中核实"}
+	}
+	c.audit(r, "customer", cu.ID, "handover", "ok", "official="+official, cu.Revision)
+	return result{location: "/admin/customers?q=" + cu.ID, flash: "已转人工（官方已确认，本地暂停 AI 发送）"}
 }
 
+// customerRecover returns the session to the AI assistant officially, reads
+// it back, and only then creates the new generation locally.
 func (c *Console) customerRecover(r *http.Request, _ *session) result {
 	cu, res := c.customer(r)
 	if res != nil {
 		return *res
 	}
+	if cu.State != state.CustomerHuman && cu.State != state.CustomerWaitingHuman {
+		return result{status: http.StatusConflict, flash: "恢复失败：需先处于已确认的人工状态"}
+	}
+	official, certain, rejected := c.transfer(r, cu, state.CustomerAIEligible, state.CustomerAIEligible)
+	if rejected != nil {
+		c.audit(r, "customer", cu.ID, "recover", "rejected", rejected.Error(), cu.Revision)
+		return result{location: "/admin/customers?q=" + cu.ID, flash: "恢复失败（官方未变更）：" + rejected.Error()}
+	}
+	if !certain {
+		_ = c.cfg.Store.SetCustomerState(r.Context(), cu.ID, state.CustomerUnknown)
+		_ = c.cfg.Store.SetOfficialStatus(r.Context(), cu.ID, state.CustomerUnknown)
+		c.audit(r, "customer", cu.ID, "recover", "unknown", "", cu.Revision)
+		return result{location: "/admin/customers?q=" + cu.ID, flash: "官方恢复结果未知（UNKNOWN）：AI 保持暂停，请在企业微信中核实"}
+	}
 	nc, err := c.cfg.Store.RecoverCustomer(r.Context(), cu.ID, "admin_recover")
 	if err != nil {
-		return result{status: http.StatusConflict, flash: "恢复失败（需先处于人工状态）：" + err.Error()}
+		return result{status: http.StatusConflict, flash: "恢复失败：" + err.Error()}
 	}
+	_ = c.cfg.Store.SetOfficialStatus(r.Context(), cu.ID, official)
 	c.audit(r, "customer", cu.ID, "recover", "ok", fmt.Sprintf("generation %d -> %d", cu.Generation, nc.Generation), cu.Revision)
-	return result{location: "/admin/customers?q=" + nc.ID, flash: "已恢复 AI：新 UID 与新客户端上下文；在途任务不承诺可撤回"}
+	return result{location: "/admin/customers?q=" + nc.ID, flash: "已恢复 AI（官方已确认）：新 UID 与新客户端上下文；在途任务不承诺可撤回"}
 }
 
 // ---- 诊断 / 设置 ----

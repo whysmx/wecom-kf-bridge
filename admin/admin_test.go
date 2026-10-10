@@ -372,8 +372,19 @@ func TestAccountDeleteTicket(t *testing.T) {
 	if b, _ := e.st.Account(context.Background(), "wk1"); b.Status != state.AccountDeleted {
 		t.Fatal("not deleted", b.Status)
 	}
-	if b, _ := e.st.Binding(context.Background(), "b1"); !b.Active {
-		t.Fatal("deleting the account must not touch the binding")
+	// #32: account deleted -> its binding (b1 uses wk1) is disabled, tokens
+	// revoked via ApplyBinding, and old customer UIDs are stale.
+	if b, _ := e.st.Binding(context.Background(), "b1"); b.Active || b.Revision != 2 {
+		t.Fatal("binding of deleted account still active", b)
+	}
+	if last := e.rt.applied[len(e.rt.applied)-1]; last.ID != "b1" || last.Active {
+		t.Fatal("runtime not told to revoke", last)
+	}
+	if _, err := e.st.CustomerByUID(context.Background(), "b1", e.cust.UID); !errors.Is(err, state.ErrStaleGeneration) {
+		t.Fatal("old UID not frozen", err)
+	}
+	if b, _ := e.st.Binding(context.Background(), "other"); !b.Active {
+		t.Fatal("other enterprise binding touched")
 	}
 	seedAccount(t, e, "wk2")
 	a2, _ := e.st.Account(context.Background(), "wk2")

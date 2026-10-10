@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,8 +26,23 @@ const adminPassword = "s3cret-admin-pw"
 
 // fakeWeComAPI serves the official endpoints the console uses.
 func fakeWeComAPI(t *testing.T) *httptest.Server {
+	var mu sync.Mutex
+	svc := 1
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/cgi-bin/kf/service_state/trans":
+			var req struct {
+				State int `json:"service_state"`
+			}
+			json.NewDecoder(r.Body).Decode(&req)
+			mu.Lock()
+			svc = req.State
+			mu.Unlock()
+			w.Write([]byte(`{"errcode":0}`))
+		case "/cgi-bin/kf/service_state/get":
+			mu.Lock()
+			fmt.Fprintf(w, `{"errcode":0,"service_state":%d}`, svc)
+			mu.Unlock()
 		case "/cgi-bin/gettoken":
 			w.Write([]byte(`{"errcode":0,"access_token":"REAL-TOKEN","expires_in":7200}`))
 		case "/cgi-bin/kf/account/list":
@@ -69,6 +86,7 @@ func adminGatewayConfig(t *testing.T, ccPort int) Config {
 	cfg := gatewayConfig(t)
 	hash, _ := bcrypt.GenerateFromPassword([]byte(adminPassword), bcrypt.MinCost)
 	t.Setenv("G_ADMIN_HASH", string(hash))
+	cfg.WeCom.ServiceStateMap = map[string]string{"1": "AI_ELIGIBLE", "2": "WAITING_HUMAN", "3": "HUMAN"}
 	cfg.Admin = AdminConfig{Listen: "127.0.0.1:0", Origin: adminOrigin, PasswordHashEnv: "G_ADMIN_HASH", CompanyName: "测试企业"}
 	cfg.Security.CallbackTargets = append(cfg.Security.CallbackTargets, CallbackTarget{Host: "127.0.0.1", Port: ccPort, AllowedCIDRs: []string{"127.0.0.0/8"}})
 	return cfg
@@ -241,10 +259,57 @@ func TestAdminConsoleEndToEnd(t *testing.T) {
 	if gettoken(t, g.Handler, "bridge_a", gatewayEnv["G_VSECRET"]) != 0 {
 		t.Fatal("config binding credentials")
 	}
-	// old sessions do not survive the restart
+	// #33: handover/recover go through the official API and read back
+	cust, _ := g.Store.EnsureCustomer(context.Background(), "e1", "b2", "ext-e2e")
 	c.h = g.Admin
 	if w := c.do("GET", "/admin/", nil); w.Code != http.StatusSeeOther {
 		t.Fatal("session survived restart")
+	}
+	c = adminLogin(t, g.Admin)
+	c.post("/admin/customers/"+cust.ID+"/handover", url.Values{"revision": {strconv.FormatInt(cust.Revision, 10)}})
+	if cu, _ := g.Store.Customer(context.Background(), cust.ID); cu.State != "HUMAN" || cu.OfficialStatus != "WAITING_HUMAN" {
+		t.Fatal("handover via official API", cu.State, cu.OfficialStatus)
+	}
+	cu, _ := g.Store.Customer(context.Background(), cust.ID)
+	c.post("/admin/customers/"+cust.ID+"/recover", url.Values{"revision": {strconv.FormatInt(cu.Revision, 10)}})
+	if cu2, _ := g.Store.Customer(context.Background(), cust.ID); cu2.State != "AI_ELIGIBLE" || cu2.Generation != cu.Generation+1 {
+		t.Fatal("recover via official API", cu2.State)
+	}
+	// #32: deleting the kf account disables b2 and revokes its tokens
+	tw := httptest.NewRecorder()
+	g.Handler.ServeHTTP(tw, httptest.NewRequest("GET", "/cgi-bin/gettoken?corpid="+url.QueryEscape(corp2)+"&corpsecret="+url.QueryEscape(secret2), nil))
+	var tokResp struct {
+		AccessToken string `json:"access_token"`
+	}
+	json.Unmarshal(tw.Body.Bytes(), &tokResp)
+	if tokResp.AccessToken == "" {
+		t.Fatal("precondition: token")
+	}
+	userGet := func() int {
+		w := httptest.NewRecorder()
+		g.Handler.ServeHTTP(w, httptest.NewRequest("GET", "/cgi-bin/user/get?access_token="+tokResp.AccessToken+"&userid=x", nil))
+		var out struct {
+			ErrCode int `json:"errcode"`
+		}
+		json.Unmarshal(w.Body.Bytes(), &out)
+		return out.ErrCode
+	}
+	if userGet() == 40014 || userGet() == 42001 {
+		t.Fatal("token not valid before delete")
+	}
+	c.post("/admin/stepup", url.Values{"password": {adminPassword}})
+	page := c.do("GET", "/admin/accounts?id=kf2", nil).Body.String()
+	tk := regexp.MustCompile(`name="ticket" value="([0-9a-f]+)"`).FindStringSubmatch(page)[1]
+	acc, _ := g.Store.Account(context.Background(), "kf2")
+	c.post("/admin/accounts/kf2/delete", url.Values{"revision": {strconv.FormatInt(acc.Revision, 10)}, "ticket": {tk}, "confirm": {"kf2"}})
+	if b, _ := g.Store.Binding(context.Background(), "b2"); b.Active {
+		t.Fatal("binding of deleted account active")
+	}
+	if gettoken(t, g.Handler, corp2, secret2) == 0 {
+		t.Fatal("deleted account's cc-connect credentials still work")
+	}
+	if code := userGet(); code == 0 || code == 60111 {
+		t.Fatal("old cc-connect token still accepted after account delete", code)
 	}
 }
 
