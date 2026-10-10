@@ -58,11 +58,16 @@ jobs:
             tar -C "${dist}" -czf "/tmp/${archive##*/}.tar.gz" .
             mv "/tmp/${archive##*/}.tar.gz" "${archive}.tar.gz"
           fi
-          sha256sum "${archive}"* >> "${dist}/SHA256SUMS"
+          mkdir -p pkg
+          mv "${archive}".tar.gz "${archive}".zip pkg/ 2>/dev/null || true
+          ls pkg
+      # Only the package is uploaded; checksums are computed once over all
+      # packages in the publish job (matrix jobs used to overwrite them).
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: dist/${{ github.ref_name }}/*
+          path: pkg/*
+          if-no-files-found: error
   publish:
     name: Publish GitHub Release
     needs: build
@@ -76,6 +81,15 @@ jobs:
           pattern: release-*
           path: dist
           merge-multiple: true
+      - name: Combined SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd dist
+          n=$(ls *.tar.gz *.zip | wc -l)
+          if [ "$n" -ne 6 ]; then echo "expected 6 packages, got $n"; ls -la; exit 1; fi
+          sha256sum *.tar.gz *.zip > SHA256SUMS
+          cat SHA256SUMS
+          sha256sum -c SHA256SUMS
       - name: Extract release notes from CHANGELOG
         run: scripts/release_notes.sh "${GITHUB_REF_NAME}" > release-notes.md
       - name: Publish release
@@ -85,6 +99,6 @@ jobs:
           name: ${{ github.ref_name }}
           body_path: release-notes.md
           files: |
-            dist/**/*.tar.gz
-            dist/**/*.zip
-            dist/**/SHA256SUMS
+            dist/*.tar.gz
+            dist/*.zip
+            dist/SHA256SUMS
