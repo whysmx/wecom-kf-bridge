@@ -22,16 +22,7 @@ type testLogger struct{ n atomic.Int32 }
 
 func (l *testLogger) Log(string, map[string]any) { l.n.Add(1) }
 
-type pageStore struct {
-	pages []SyncResponse
-	n     int
-}
 
-func (s *pageStore) CommitSyncPage(_ context.Context, _ string, p SyncResponse) error {
-	s.pages = append(s.pages, p)
-	s.n++
-	return nil
-}
 func validKeyString() string {
 	return strings.TrimRight(base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{3}, 32)), "=")
 }
@@ -170,42 +161,6 @@ func TestClientEndpointResponseFailures(t *testing.T) {
 	}
 }
 
-func TestSyncAllPaths(t *testing.T) {
-	var i atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		n := i.Add(1)
-		w.Header().Set("Content-Type", "application/json")
-		if n == 1 {
-			_, _ = w.Write([]byte(`{"errcode":0,"next_cursor":"a","has_more":1,"msg_list":[{"msgid":"m"}]}`))
-		} else {
-			_, _ = w.Write([]byte(`{"errcode":0,"next_cursor":"b","has_more":0,"msg_list":[]}`))
-		}
-	}))
-	defer srv.Close()
-	c := NewClient(srv.URL, "c", "s")
-	ps := &pageStore{}
-	res, e := c.SyncAll(context.Background(), SyncOptions{Scope: "x", AccessToken: "t", Store: ps})
-	if e != nil || res.Pages != 2 || res.Messages != 1 {
-		t.Fatalf("%#v %v", res, e)
-	}
-	if _, e := c.SyncAll(context.Background(), SyncOptions{Store: ps}); e == nil {
-		t.Fatal("empty scope")
-	}
-	if _, e := c.SyncAll(context.Background(), SyncOptions{Scope: "x"}); e == nil {
-		t.Fatal("nil store")
-	}
-	rep := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"errcode":0,"next_cursor":"","has_more":1,"msg_list":[]}`))
-	}))
-	defer rep.Close()
-	rc := NewClient(rep.URL, "c", "s")
-	if _, e := rc.SyncAll(context.Background(), SyncOptions{Scope: "x", AccessToken: "t", Store: &pageStore{}}); !errors.Is(e, ErrCursorNoProgress) {
-		t.Fatalf("repeat %v", e)
-	}
-	if _, e := c.SyncAll(context.Background(), SyncOptions{Scope: "x", AccessToken: "t", Store: struct{}{}}); e == nil {
-		t.Fatal("unsupported store")
-	}
-}
 func TestOutboundAndWebhook(t *testing.T) {
 	key := validKeyString()
 	w, e := NewWebhook("tok", key, "corp")

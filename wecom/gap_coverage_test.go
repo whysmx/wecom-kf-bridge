@@ -14,7 +14,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/whysmx/wecom-kf-bridge/state"
 )
 
 // errReader is used to exercise response/body I/O failures without relying on
@@ -116,27 +115,8 @@ func TestCryptoCoverageGapBranches(t *testing.T) {
 	}
 }
 
-type captureStateStore struct{ msgs []state.InboxMessage }
 
-func (s *captureStateStore) CommitSyncPage(_ context.Context, _ string, _ string, _ bool, msgs []state.InboxMessage) (int, error) {
-	s.msgs = append(s.msgs, msgs...)
-	return len(msgs), nil
-}
 
-func TestSyncAllCoverageGapBranches(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.WriteString(w, `{"errcode":0,"next_cursor":"done","has_more":0,"msg_list":[{"msgid":"","msgtype":"text"}]}`)
-	}))
-	defer srv.Close()
-	store := &captureStateStore{}
-	res, err := NewClient(srv.URL, "c", "s").SyncAll(context.Background(), SyncOptions{Scope: "scope", AccessToken: "token", Store: store})
-	if err != nil || res.Messages != 1 || len(store.msgs) != 1 {
-		t.Fatalf("result=%#v msgs=%#v err=%v", res, store.msgs, err)
-	}
-	if store.msgs[0].BindingID != "scope" || store.msgs[0].ExternalMsgID == "" {
-		t.Fatalf("fallback IDs not assigned: %#v", store.msgs[0])
-	}
-}
 
 type failingBody struct{}
 

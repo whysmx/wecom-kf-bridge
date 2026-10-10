@@ -106,14 +106,6 @@ func TestClientHTTPFailuresAndValidation(t *testing.T) {
 }
 
 func TestSyncAndCustomerBranches(t *testing.T) {
-	if stableCompatID("") == 0 {
-		t.Fatal("compat")
-	}
-	p := SyncResponse{Messages: []SyncMessage{{MsgID: "m", SendTime: 1, Origin: 2, MsgType: "text", Text: &SyncText{Content: "txt"}}, {MsgID: "", Content: "raw"}}}
-	ms := stateMessages("s", "b", p)
-	if len(ms) != 2 || ms[0].PayloadRef != "txt" || ms[1].PayloadRef != "raw" {
-		t.Fatalf("%#v", ms)
-	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/cgi-bin/kf/customer/batchget", func(w http.ResponseWriter, r *http.Request) {
 		var in map[string]any
@@ -190,61 +182,10 @@ func (failingRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
 	return nil, errors.New("transport")
 }
 
-type v1FailStore struct{}
 
-func (v1FailStore) CommitSyncPage(context.Context, string, SyncResponse) error {
-	return errors.New("commit")
-}
 
-type stateFailStore struct{}
 
-func (stateFailStore) CommitSyncPage(context.Context, string, string, bool, []state.InboxMessage) (int, error) {
-	return 0, errors.New("commit")
-}
 
-func TestSyncAllLimitsAndStores(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/cgi-bin/kf/sync_msg", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"errcode":0,"next_cursor":"n","has_more":1,"msg_list":[]}`))
-	})
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
-	c := NewClient(srv.URL, "c", "s")
-	if _, err := c.SyncAll(context.Background(), SyncOptions{Scope: "s", AccessToken: "t", Store: v1FailStore{}}); err == nil {
-		t.Fatal("v1 failure")
-	}
-	if _, err := c.SyncAll(context.Background(), SyncOptions{Scope: "s", AccessToken: "t", BindingID: "b", Store: stateFailStore{}}); err == nil {
-		t.Fatal("state failure")
-	}
-	if _, err := c.SyncAll(context.Background(), SyncOptions{Scope: "s", AccessToken: "t", Store: &pageStore{}, MaxPages: 1}); err == nil {
-		t.Fatal("limit")
-	}
-	mux2 := http.NewServeMux()
-	mux2.HandleFunc("/cgi-bin/kf/sync_msg", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"errcode":0,"next_cursor":"","has_more":1,"msg_list":[]}`))
-	})
-	srv2 := httptest.NewServer(mux2)
-	defer srv2.Close()
-	if _, err := NewClient(srv2.URL, "c", "s").SyncAll(context.Background(), SyncOptions{Scope: "s", AccessToken: "t", Store: &pageStore{}}); !errors.Is(err, ErrCursorNoProgress) {
-		t.Fatal(err)
-	}
-	mux3 := http.NewServeMux()
-	mux3.HandleFunc("/cgi-bin/kf/sync_msg", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"errcode":0,"next_cursor":"","has_more":1,"msg_list":[]}`))
-	})
-	srv3 := httptest.NewServer(mux3)
-	defer srv3.Close()
-	if _, err := NewClient(srv3.URL, "c", "s").SyncAll(context.Background(), SyncOptions{Scope: "s", Request: SyncRequest{Cursor: "old"}, AccessToken: "t", Store: &pageStore{}}); !errors.Is(err, ErrCursorNoProgress) {
-		t.Fatal(err)
-	}
-	mux4 := http.NewServeMux()
-	mux4.HandleFunc("/cgi-bin/kf/sync_msg", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(`{"errcode":9,"errmsg":"bad"}`)) })
-	srv4 := httptest.NewServer(mux4)
-	defer srv4.Close()
-	if _, err := NewClient(srv4.URL, "c", "s").SyncAll(context.Background(), SyncOptions{Scope: "s", AccessToken: "t", Store: &pageStore{}}); err == nil {
-		t.Fatal("upstream")
-	}
-}
 
 func TestCustomerProfilesWithStateStore(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")

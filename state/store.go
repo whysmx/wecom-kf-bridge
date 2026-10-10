@@ -104,6 +104,12 @@ type Customer struct {
 	Revision          int64
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
+	// Authorized is the gateway entry authorization for this customer.
+	Authorized bool
+	// LastInboundAt is the send_time of the latest customer-initiated
+	// message; it opens the send window. WindowUsed counts reserved sends.
+	LastInboundAt time.Time
+	WindowUsed    int
 }
 
 type SyncScope struct {
@@ -134,6 +140,9 @@ type InboxMessage struct {
 	Attempt       int
 	ReceivedAt    time.Time
 	UpdatedAt     time.Time
+	// CustomerInitiated (not persisted) marks a newly stored customer
+	// message that reopens the send window for CustomerID.
+	CustomerInitiated bool
 }
 
 type OutboxMessage struct {
@@ -274,6 +283,9 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS audit (
 	 id INTEGER PRIMARY KEY AUTOINCREMENT, idempotency_key TEXT NOT NULL UNIQUE, object_type TEXT NOT NULL, object_id TEXT NOT NULL,
 	 operation TEXT NOT NULL, result TEXT NOT NULL, parameter_summary TEXT NOT NULL DEFAULT '', revision INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL)`,
+		// compat_seq hands out the cc-connect MsgId: a persisted, strictly
+		// increasing positive int64 per binding (docs/03 §6, docs/09 §2).
+		`CREATE TABLE IF NOT EXISTS compat_seq (binding_id TEXT PRIMARY KEY, next INTEGER NOT NULL CHECK(next > 0))`,
 		`CREATE INDEX IF NOT EXISTS idx_customers_uid ON customers(binding_id,uid)`,
 		`CREATE INDEX IF NOT EXISTS idx_inbox_state ON inbox(binding_id,state)`,
 		`CREATE INDEX IF NOT EXISTS idx_outbox_state ON outbox(binding_id,state)`,
@@ -282,6 +294,44 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		if _, err := db.ExecContext(ctx, q); err != nil {
 			return fmt.Errorf("state migration: %w", err)
 		}
+	}
+	for _, c := range []struct{ table, col, def string }{
+		{"customers", "authorized", "INTEGER NOT NULL DEFAULT 1"},
+		{"customers", "last_inbound_at", "INTEGER NOT NULL DEFAULT 0"},
+		{"customers", "window_used", "INTEGER NOT NULL DEFAULT 0"},
+		{"outbox", "chunks_total", "INTEGER NOT NULL DEFAULT 0"},
+		{"outbox", "chunks_sent", "INTEGER NOT NULL DEFAULT 0"},
+		{"sync_scopes", "sync_token", "TEXT NOT NULL DEFAULT ''"},
+		{"sync_scopes", "sync_token_expires_at", "INTEGER NOT NULL DEFAULT 0"},
+	} {
+		if err := addColumn(ctx, db, c.table, c.col, c.def); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func addColumn(ctx context.Context, db *sql.DB, table, col, def string) error {
+	rows, err := db.QueryContext(ctx, `SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return fmt.Errorf("state migration: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return err
+		}
+		if n == col {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+	if _, err := db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN `+col+` `+def); err != nil {
+		return fmt.Errorf("state migration: %w", err)
 	}
 	return nil
 }
@@ -447,6 +497,16 @@ func (s *Store) Scope(ctx context.Context, id string) (SyncScope, error) {
 	}
 	return x, err
 }
+// SetSyncState records a visible scope status (READY, STALLED, PAGE_LIMIT,
+// PAUSED_MISSING_MSGID, ...) for operators.
+func (s *Store) SetSyncState(ctx context.Context, id, st string) error {
+	r, err := s.db.ExecContext(ctx, `UPDATE sync_scopes SET state=?,updated_at=? WHERE id=?`, st, unix(s.now()), id)
+	if err != nil {
+		return err
+	}
+	return rowsOrNotFound(r)
+}
+
 func (s *Store) MarkSyncPending(ctx context.Context, id string, pending bool) error {
 	if id == "" {
 		return ErrInvalidID
@@ -467,7 +527,7 @@ func (s *Store) EnsureCustomer(ctx context.Context, enterpriseID, bindingID, ext
 		return Customer{}, ErrInvalidID
 	}
 	defer s.lock("customer-key:" + enterpriseID + ":" + bindingID + ":" + external)()
-	c, err := scanCustomer(s.db.QueryRowContext(ctx, `SELECT id,enterprise_id,binding_id,external_user_id,generation,uid,nickname,nickname_updated_at,official_status,state,fence_generation,revision,created_at,updated_at FROM customers WHERE enterprise_id=? AND binding_id=? AND external_user_id=?`, enterpriseID, bindingID, external))
+	c, err := scanCustomer(s.db.QueryRowContext(ctx, `SELECT `+customerCols+` FROM customers WHERE enterprise_id=? AND binding_id=? AND external_user_id=?`, enterpriseID, bindingID, external))
 	if err == nil {
 		return c, nil
 	}
@@ -493,24 +553,29 @@ func (s *Store) EnsureCustomer(ctx context.Context, enterpriseID, bindingID, ext
 	}
 	return s.Customer(ctx, id)
 }
+const customerCols = `id,enterprise_id,binding_id,external_user_id,generation,uid,nickname,nickname_updated_at,official_status,state,fence_generation,revision,created_at,updated_at,authorized,last_inbound_at,window_used`
+
 func scanCustomer(row interface{ Scan(...any) error }) (Customer, error) {
 	var c Customer
-	var n, cat, ua int64
-	err := row.Scan(&c.ID, &c.EnterpriseID, &c.BindingID, &c.ExternalUserID, &c.Generation, &c.UID, &c.Nickname, &n, &c.OfficialStatus, &c.State, &c.FenceGeneration, &c.Revision, &cat, &ua)
+	var n, cat, ua, li int64
+	var auth int
+	err := row.Scan(&c.ID, &c.EnterpriseID, &c.BindingID, &c.ExternalUserID, &c.Generation, &c.UID, &c.Nickname, &n, &c.OfficialStatus, &c.State, &c.FenceGeneration, &c.Revision, &cat, &ua, &auth, &li, &c.WindowUsed)
+	c.Authorized = auth != 0
+	c.LastInboundAt = timeFrom(li)
 	c.NicknameUpdatedAt = timeFrom(n)
 	c.CreatedAt = timeFrom(cat)
 	c.UpdatedAt = timeFrom(ua)
 	return c, err
 }
 func (s *Store) Customer(ctx context.Context, id string) (Customer, error) {
-	c, err := scanCustomer(s.db.QueryRowContext(ctx, `SELECT id,enterprise_id,binding_id,external_user_id,generation,uid,nickname,nickname_updated_at,official_status,state,fence_generation,revision,created_at,updated_at FROM customers WHERE id=?`, id))
+	c, err := scanCustomer(s.db.QueryRowContext(ctx, `SELECT `+customerCols+` FROM customers WHERE id=?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		err = ErrNotFound
 	}
 	return c, err
 }
 func (s *Store) CustomerByUID(ctx context.Context, bindingID, uid string) (Customer, error) {
-	c, err := scanCustomer(s.db.QueryRowContext(ctx, `SELECT id,enterprise_id,binding_id,external_user_id,generation,uid,nickname,nickname_updated_at,official_status,state,fence_generation,revision,created_at,updated_at FROM customers WHERE binding_id=? AND uid=?`, bindingID, uid))
+	c, err := scanCustomer(s.db.QueryRowContext(ctx, `SELECT `+customerCols+` FROM customers WHERE binding_id=? AND uid=?`, bindingID, uid))
 	if errors.Is(err, sql.ErrNoRows) {
 		err = ErrNotFound
 	}
@@ -560,7 +625,7 @@ func (s *Store) BeginHandover(ctx context.Context, customerID, reason string) (C
 		return Customer{}, err
 	}
 	defer tx.Rollback()
-	c, err := scanCustomer(tx.QueryRowContext(ctx, `SELECT id,enterprise_id,binding_id,external_user_id,generation,uid,nickname,nickname_updated_at,official_status,state,fence_generation,revision,created_at,updated_at FROM customers WHERE id=?`, customerID))
+	c, err := scanCustomer(tx.QueryRowContext(ctx, `SELECT `+customerCols+` FROM customers WHERE id=?`, customerID))
 	if err != nil {
 		return Customer{}, mapNotFound(err)
 	}
@@ -617,7 +682,7 @@ func (s *Store) RecoverCustomer(ctx context.Context, customerID, reason string) 
 		return Customer{}, err
 	}
 	defer tx.Rollback()
-	c, err := scanCustomer(tx.QueryRowContext(ctx, `SELECT id,enterprise_id,binding_id,external_user_id,generation,uid,nickname,nickname_updated_at,official_status,state,fence_generation,revision,created_at,updated_at FROM customers WHERE id=?`, customerID))
+	c, err := scanCustomer(tx.QueryRowContext(ctx, `SELECT `+customerCols+` FROM customers WHERE id=?`, customerID))
 	if err != nil {
 		return Customer{}, mapNotFound(err)
 	}
@@ -679,8 +744,22 @@ func (s *Store) CommitSyncPage(ctx context.Context, scopeID, nextCursor string, 
 		if in.ScopeID == "" {
 			in.ScopeID = scopeID
 		}
-		if in.ScopeID != scopeID || in.BindingID == "" || in.ExternalMsgID == "" || in.CompatMsgID <= 0 {
+		if in.ScopeID != scopeID || in.BindingID == "" || in.ExternalMsgID == "" || in.CompatMsgID < 0 {
 			return 0, ErrInvalidID
+		}
+		var exists int
+		if e := tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM inbox WHERE scope_id=? AND external_msg_id=?`, scopeID, in.ExternalMsgID).Scan(&exists); e != nil {
+			return 0, e
+		}
+		if exists > 0 {
+			continue // duplicate page/message: keep the originally assigned MsgId
+		}
+		if in.CompatMsgID == 0 {
+			id, e := nextCompatID(ctx, tx, in.BindingID)
+			if e != nil {
+				return 0, e
+			}
+			in.CompatMsgID = id
 		}
 		if in.State == "" {
 			in.State = InboxReceived
@@ -704,6 +783,17 @@ func (s *Store) CommitSyncPage(ctx context.Context, scopeID, nextCursor string, 
 			return 0, e
 		}
 		inserted += int(n)
+		if n == 1 && in.CustomerInitiated && in.CustomerID != "" {
+			// Only a newly stored (not duplicate/replayed) customer message
+			// refreshes the window, and never moves it backwards.
+			at := in.CreateTime
+			if at.IsZero() {
+				at = now
+			}
+			if _, e = tx.ExecContext(ctx, `UPDATE customers SET last_inbound_at=?,window_used=0,updated_at=? WHERE id=? AND last_inbound_at<?`, unix(at), unix(now), in.CustomerID, unix(at)); e != nil {
+				return 0, e
+			}
+		}
 	}
 	// pending is cleared only once the final page (has_more=0) is durable;
 	// a crash mid-pagination must leave the scope marked for resumption.
@@ -720,6 +810,27 @@ func (s *Store) CommitSyncPage(ctx context.Context, scopeID, nextCursor string, 
 	return inserted, nil
 }
 
+func nextCompatID(ctx context.Context, tx *sql.Tx, bindingID string) (int64, error) {
+	var next int64
+	err := tx.QueryRowContext(ctx, `SELECT next FROM compat_seq WHERE binding_id=?`, bindingID).Scan(&next)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Start above any id already present (e.g. rows written before the
+		// sequence table existed) so uniqueness is preserved.
+		if err = tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(compat_msg_id),0)+1 FROM inbox WHERE binding_id=?`, bindingID).Scan(&next); err != nil {
+			return 0, err
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO compat_seq(binding_id,next) VALUES(?,?)`, bindingID, next+1)
+		return next, err
+	}
+	if err != nil {
+		return 0, err
+	}
+	if next <= 0 || next == 1<<63-1 {
+		return 0, errors.New("state: compat MsgId sequence exhausted")
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE compat_seq SET next=? WHERE binding_id=?`, next+1, bindingID)
+	return next, err
+}
 func scanInbox(row interface{ Scan(...any) error }) (InboxMessage, error) {
 	var m InboxMessage
 	var ct, ra, ua int64
@@ -806,7 +917,7 @@ func (s *Store) CreateOutbox(ctx context.Context, o OutboxMessage) (OutboxMessag
 	}
 	defer tx.Rollback()
 	var c Customer
-	c, err = scanCustomer(tx.QueryRowContext(ctx, `SELECT id,enterprise_id,binding_id,external_user_id,generation,uid,nickname,nickname_updated_at,official_status,state,fence_generation,revision,created_at,updated_at FROM customers WHERE id=?`, o.CustomerID))
+	c, err = scanCustomer(tx.QueryRowContext(ctx, `SELECT `+customerCols+` FROM customers WHERE id=?`, o.CustomerID))
 	if err != nil {
 		return OutboxMessage{}, mapNotFound(err)
 	}

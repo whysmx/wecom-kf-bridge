@@ -146,7 +146,7 @@ func TestStoreTransitionBranches(t *testing.T) {
 	if _, err := s.CommitSyncPage(ctx, "scope", "x", false, []InboxMessage{{BindingID: "b", ExternalMsgID: "", CompatMsgID: 1}}); !errors.Is(err, ErrInvalidID) {
 		t.Fatal(err)
 	}
-	if _, err := s.CommitSyncPage(ctx, "scope", "x", false, []InboxMessage{{BindingID: "b", ExternalMsgID: "m", CompatMsgID: 0}}); !errors.Is(err, ErrInvalidID) {
+	if _, err := s.CommitSyncPage(ctx, "scope", "x", false, []InboxMessage{{BindingID: "b", ExternalMsgID: "m", CompatMsgID: -1}}); !errors.Is(err, ErrInvalidID) {
 		t.Fatal(err)
 	}
 	n, err := s.CommitSyncPage(ctx, "scope", "x", false, []InboxMessage{{BindingID: "b", ExternalMsgID: "m", CompatMsgID: 1}})
