@@ -3,7 +3,7 @@ module github.com/whysmx/wecom-kf-bridge
 go 1.22
 
 require (
-	golang.org/x/sys v0.19.0
+	golang.org/x/sys v0.21.0
 	modernc.org/sqlite v1.29.8
 )
 

@@ -348,6 +348,9 @@ func migrate(ctx context.Context, db *sql.DB) error {
 			return err
 		}
 	}
+	if err := migrateAdmin(ctx, db); err != nil {
+		return err
+	}
 	// Identity columns are immutable at the database level, whatever code
 	// path issues the UPDATE.
 	for _, t := range []struct{ table, cols string }{
