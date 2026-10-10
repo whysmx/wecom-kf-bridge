@@ -131,3 +131,36 @@ func TestRecordOutboxChunks(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestRejectedRequestStillRecordedBlocked(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t)
+	seedScope(t, s)
+	c, _ := s.EnsureCustomer(ctx, "e1", "b1", "ext")
+	o, err := s.CreateOutbox(ctx, OutboxMessage{CustomerID: c.ID, Generation: 1, UID: c.UID, Body: "x"})
+	if !errors.Is(err, ErrWindowClosed) || o.ID == "" {
+		t.Fatalf("%+v %v", o, err)
+	}
+	got, _ := s.Outbox(ctx, o.ID)
+	if got.State != OutboxBlocked || got.ErrorCategory != BlockWindow || got.BudgetReserved {
+		t.Fatalf("%+v", got)
+	}
+	openWindow(t, s, c.ID)
+	o, err = s.CreateOutbox(ctx, OutboxMessage{CustomerID: c.ID, Generation: 1, UID: c.UID, Body: "y", BudgetUnits: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err = s.BlockOutbox(ctx, o.ID, BlockStateQuery); err != nil || got.State != OutboxBlocked {
+		t.Fatalf("%+v %v", got, err)
+	}
+	cc, _ := s.Customer(ctx, c.ID)
+	if cc.WindowUsed != 0 {
+		t.Fatalf("budget not released: %d", cc.WindowUsed)
+	}
+	if _, err = s.BlockOutbox(ctx, o.ID, "again"); !errors.Is(err, ErrInvalidState) {
+		t.Fatal(err)
+	}
+	if _, err = s.BlockOutbox(ctx, "none", "x"); !errors.Is(err, ErrNotFound) {
+		t.Fatal(err)
+	}
+}

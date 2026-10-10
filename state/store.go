@@ -863,7 +863,7 @@ func (s *Store) CommitSyncPage(ctx context.Context, scopeID, nextCursor string, 
 			if at.IsZero() {
 				at = now
 			}
-			if _, e = tx.ExecContext(ctx, `UPDATE customers SET last_inbound_at=?,window_used=0,updated_at=? WHERE id=? AND last_inbound_at<?`, unix(at), unix(now), in.CustomerID, unix(at)); e != nil {
+			if _, e = tx.ExecContext(ctx, `UPDATE customers SET last_inbound_at=?,window_used=0,updated_at=? WHERE id=? AND last_inbound_at<=?`, unix(at), unix(now), in.CustomerID, unix(at)); e != nil {
 				return 0, e
 			}
 		}
@@ -980,8 +980,12 @@ func allowedInbox(a, b string) bool {
 	return false
 }
 
-// CreateOutbox validates the current generation and local handover fence while
-// reserving budget in one transaction. The caller must send after commit.
+// CreateOutbox first records the request (docs/03 §5: 先登记 outbox) and then
+// validates generation, takeover fence, authorization, binding and the send
+// window/budget in the same transaction. A request that fails a check is
+// still persisted as BLOCKED (with the reason in ErrorCategory) and returned
+// together with the error; only an accepted request reserves budget. The
+// caller must perform the network send after commit.
 func (s *Store) CreateOutbox(ctx context.Context, o OutboxMessage) (OutboxMessage, error) {
 	defer s.lock("customer:" + o.CustomerID)()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -989,70 +993,126 @@ func (s *Store) CreateOutbox(ctx context.Context, o OutboxMessage) (OutboxMessag
 		return OutboxMessage{}, err
 	}
 	defer tx.Rollback()
-	var c Customer
-	c, err = scanCustomer(tx.QueryRowContext(ctx, `SELECT `+customerCols+` FROM customers WHERE id=?`, o.CustomerID))
+	c, err := scanCustomer(tx.QueryRowContext(ctx, `SELECT `+customerCols+` FROM customers WHERE id=?`, o.CustomerID))
 	if err != nil {
 		return OutboxMessage{}, mapNotFound(err)
-	}
-	if c.Generation != o.Generation || c.UID != o.UID {
-		return OutboxMessage{}, ErrStaleGeneration
-	}
-	// Takeover fence: a fence at the current generation with a non-AI state
-	// means a handover began; nothing may be sent for this generation.
-	if c.State != CustomerAIEligible || c.FenceGeneration > c.Generation {
-		return OutboxMessage{}, ErrHeld
-	}
-	if !c.Authorized {
-		return OutboxMessage{}, ErrUnauthorized
-	}
-	var active int
-	var rev int64
-	if err = tx.QueryRowContext(ctx, `SELECT active,revision FROM bindings WHERE id=?`, c.BindingID).Scan(&active, &rev); err != nil {
-		return OutboxMessage{}, mapNotFound(err)
-	}
-	if active == 0 || (o.BindingRevision > 0 && o.BindingRevision != rev) {
-		return OutboxMessage{}, ErrBindingInactive
 	}
 	if o.BudgetUnits <= 0 {
 		o.BudgetUnits = 1
 	}
 	now := s.now()
-	if c.LastInboundAt.IsZero() || now.Sub(c.LastInboundAt) > s.policy.Window {
-		return OutboxMessage{}, ErrWindowClosed
-	}
-	if c.WindowUsed+o.BudgetUnits > s.policy.MaxSends {
-		return OutboxMessage{}, ErrBudgetExceeded
-	}
-	if _, err = tx.ExecContext(ctx, `UPDATE customers SET window_used=window_used+?,updated_at=? WHERE id=?`, o.BudgetUnits, unix(now), c.ID); err != nil {
+	reject, category, err := s.outboxEligibility(ctx, tx, c, o, now)
+	if err != nil {
 		return OutboxMessage{}, err
 	}
 	if o.ID == "" {
-		o.ID, err = randomID("out_")
-		if err != nil {
+		if o.ID, err = randomID("out_"); err != nil {
 			return OutboxMessage{}, err
 		}
 	}
-	if o.State == "" {
-		o.State = OutboxCreated
+	reserved := 0
+	if reject != nil {
+		o.State, o.ErrorCategory = OutboxBlocked, category
+	} else {
+		if o.State == "" {
+			o.State = OutboxCreated
+		}
+		reserved = 1
+		if _, err = tx.ExecContext(ctx, `UPDATE customers SET window_used=window_used+?,updated_at=? WHERE id=?`, o.BudgetUnits, unix(now), c.ID); err != nil {
+			return OutboxMessage{}, err
+		}
 	}
 	sealedBody, err := s.sealField(o.Body, "outbox.body")
 	if err != nil {
 		return OutboxMessage{}, err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO outbox(id,binding_id,customer_id,generation,uid,body,content_ref,state,budget_units,budget_reserved,attempt,error_category,external_msg_id,created_at,updated_at,chunks_total) VALUES(?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?)`, o.ID, c.BindingID, c.ID, c.Generation, c.UID, sealedBody, o.ContentRef, o.State, o.BudgetUnits, o.Attempt, o.ErrorCategory, o.ExternalMsgID, unix(now), unix(now), o.ChunksTotal)
-	if err != nil {
+	// The row keeps the caller's claimed generation/UID so a stale attempt
+	// is auditable; the stale check above already denied it send rights.
+	gen, uid := c.Generation, c.UID
+	if reject != nil && o.UID != "" {
+		gen, uid = o.Generation, o.UID
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO outbox(id,binding_id,customer_id,generation,uid,body,content_ref,state,budget_units,budget_reserved,attempt,error_category,external_msg_id,created_at,updated_at,chunks_total) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, o.ID, c.BindingID, c.ID, gen, uid, sealedBody, o.ContentRef, o.State, o.BudgetUnits, reserved, o.Attempt, o.ErrorCategory, o.ExternalMsgID, unix(now), unix(now), o.ChunksTotal); err != nil {
 		return OutboxMessage{}, err
 	}
 	if err = tx.Commit(); err != nil {
 		return OutboxMessage{}, err
 	}
-	o.BindingID = c.BindingID
-	o.Generation = c.Generation
-	o.UID = c.UID
-	o.BudgetReserved = true
-	o.CreatedAt = now
-	o.UpdatedAt = now
-	return o, nil
+	o.BindingID, o.Generation, o.UID = c.BindingID, gen, uid
+	o.BudgetReserved = reserved == 1
+	o.CreatedAt, o.UpdatedAt = now, now
+	return o, reject
+}
+
+// Outbox BLOCKED categories.
+const (
+	BlockStale      = "stale_generation"
+	BlockHeld       = "held"
+	BlockUnauth     = "unauthorized"
+	BlockBinding    = "binding_inactive"
+	BlockWindow     = "window_closed"
+	BlockBudget     = "budget_exhausted"
+	BlockStateQuery = "service_state_unavailable"
+)
+
+func (s *Store) outboxEligibility(ctx context.Context, tx *sql.Tx, c Customer, o OutboxMessage, now time.Time) (error, string, error) {
+	if c.Generation != o.Generation || c.UID != o.UID {
+		return ErrStaleGeneration, BlockStale, nil
+	}
+	// Takeover fence: any non-AI state (set together with the fence by
+	// BeginHandover/SetHandoverStatus) blocks this generation.
+	if c.State != CustomerAIEligible || c.FenceGeneration > c.Generation {
+		return ErrHeld, BlockHeld, nil
+	}
+	if !c.Authorized {
+		return ErrUnauthorized, BlockUnauth, nil
+	}
+	var active int
+	var rev int64
+	if err := tx.QueryRowContext(ctx, `SELECT active,revision FROM bindings WHERE id=?`, c.BindingID).Scan(&active, &rev); err != nil {
+		return nil, "", mapNotFound(err)
+	}
+	if active == 0 || (o.BindingRevision > 0 && o.BindingRevision != rev) {
+		return ErrBindingInactive, BlockBinding, nil
+	}
+	if c.LastInboundAt.IsZero() || now.Sub(c.LastInboundAt) > s.policy.Window {
+		return ErrWindowClosed, BlockWindow, nil
+	}
+	if c.WindowUsed+o.BudgetUnits > s.policy.MaxSends {
+		return ErrBudgetExceeded, BlockBudget, nil
+	}
+	return nil, "", nil
+}
+
+// BlockOutbox moves a not-yet-sent outbox to BLOCKED and releases its
+// reserved budget (nothing was sent).
+func (s *Store) BlockOutbox(ctx context.Context, id, category string) (OutboxMessage, error) {
+	o, err := s.Outbox(ctx, id)
+	if err != nil {
+		return o, err
+	}
+	if o.State != OutboxCreated && o.State != OutboxValidated {
+		return o, fmt.Errorf("%w: outbox %s -> BLOCKED", ErrInvalidState, o.State)
+	}
+	defer s.lock("customer:" + o.CustomerID)()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return o, err
+	}
+	defer tx.Rollback()
+	now := unix(s.now())
+	if _, err = tx.ExecContext(ctx, `UPDATE outbox SET state=?,error_category=?,budget_reserved=0,updated_at=? WHERE id=?`, OutboxBlocked, category, now, id); err != nil {
+		return o, err
+	}
+	if o.BudgetReserved {
+		if _, err = tx.ExecContext(ctx, `UPDATE customers SET window_used=MAX(0,window_used-?),updated_at=? WHERE id=?`, o.BudgetUnits, now, o.CustomerID); err != nil {
+			return o, err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return o, err
+	}
+	return s.Outbox(ctx, id)
 }
 func scanOutbox(row interface{ Scan(...any) error }) (OutboxMessage, error) {
 	var o OutboxMessage
