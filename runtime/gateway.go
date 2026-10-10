@@ -24,13 +24,16 @@ type Gateway struct {
 	Sync     *SyncWorker
 	Delivery *DeliveryWorker
 	Workers  []Worker
+	lock     *InstanceLock
 }
 
 func (g *Gateway) Close() error {
 	if g == nil || g.Store == nil {
 		return nil
 	}
-	return g.Store.Close()
+	err := g.Store.Close()
+	_ = g.lock.Release()
+	return err
 }
 
 // Build wires every component from cfg. Secrets come from the environment.
@@ -46,13 +49,18 @@ func Build(ctx context.Context, cfg Config, logger Logger) (*Gateway, error) {
 	if err != nil {
 		return nil, err
 	}
-	st, err := state.OpenWithOptions(cfg.Storage.Database, state.Options{MasterKey: key, Policy: state.SendPolicy{Window: time.Duration(cfg.SendPolicy.WindowHours) * time.Hour, MaxSends: cfg.SendPolicy.MaxSends}})
+	lock, err := AcquireInstanceLock(cfg.Storage.Database)
 	if err != nil {
 		return nil, err
 	}
-	g := &Gateway{Store: st}
+	st, err := state.OpenWithOptions(cfg.Storage.Database, state.Options{MasterKey: key, Policy: state.SendPolicy{Window: time.Duration(cfg.SendPolicy.WindowHours) * time.Hour, MaxSends: cfg.SendPolicy.MaxSends}})
+	if err != nil {
+		lock.Release()
+		return nil, err
+	}
+	g := &Gateway{Store: st, lock: lock}
 	if err := g.wire(ctx, cfg, logger); err != nil {
-		st.Close()
+		g.Close()
 		return nil, err
 	}
 	return g, nil

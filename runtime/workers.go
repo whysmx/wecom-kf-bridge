@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -243,9 +244,10 @@ func (d *DeliveryWorker) deliver(ctx context.Context, m state.InboxMessage) bool
 		_, err := d.Store.TransitionInbox(ctx, m.ID, to, cat)
 		if err != nil {
 			d.Logger.Log("delivery_transition_failed", map[string]any{"inbox_id": m.ID, "to": to, "error": err})
+			return false
 		}
 		m.State = to
-		return err == nil
+		return true
 	}
 	if m.State == state.InboxReceived {
 		if m.Type != "text" {
@@ -263,23 +265,19 @@ func (d *DeliveryWorker) deliver(ctx context.Context, m state.InboxMessage) bool
 		return false
 	}
 	if c.State != state.CustomerAIEligible || !c.Authorized || c.Generation != m.Generation {
-		step(state.InboxHeld, "customer_not_eligible")
-		return true
+		return step(state.InboxHeld, "customer_not_eligible")
 	}
 	if m.CreateTime.IsZero() {
 		// Never substitute the current time or 0 (docs/03 §6).
-		step(state.InboxHeld, "missing_create_time")
-		return true
+		return step(state.InboxHeld, "missing_create_time")
 	}
 	target := d.CallbackURL[m.BindingID]
 	if target == "" {
-		step(state.InboxHeld, "no_callback_url")
-		return true
+		return step(state.InboxHeld, "no_callback_url")
 	}
 	cb, err := d.Server.BuildCallback(m.BindingID, bridge.InboundMessage{FromUserName: c.UID, CreateTime: m.CreateTime.Unix(), MsgType: "text", Content: m.PayloadRef, MsgID: fmt.Sprint(m.CompatMsgID), AgentID: d.AgentID[m.BindingID]})
 	if err != nil {
-		step(state.InboxHeld, "build_failed")
-		return true
+		return step(state.InboxHeld, "build_failed")
 	}
 	if !step(state.InboxPosting, "") {
 		return false
@@ -318,32 +316,64 @@ func provablyNotDelivered(err error) bool {
 
 var errTargetNotAllowed = errors.New("runtime: callback target address not allowed")
 
-// callbackHTTPClient connects only to addresses inside the allowed CIDRs of
-// a configured target (checked after DNS resolution, at connect time) and
-// never follows redirects (docs/09 §5).
+// callbackHTTPClient enforces a per-target dial policy (docs/09 §5): the
+// request's hostname:port must be a configured target, the name is
+// resolved at dial time, and only addresses inside THAT target's CIDRs are
+// dialled. A target therefore cannot reach another target's network even
+// on the same port. Proxies and redirects are disabled.
 func callbackHTTPClient(cfg Config) *http.Client {
+	return newCallbackClient(cfg, net.DefaultResolver.LookupIPAddr)
+}
+
+type lookupFunc func(ctx context.Context, host string) ([]net.IPAddr, error)
+
+func newCallbackClient(cfg Config, lookup lookupFunc) *http.Client {
+	type policy struct{ nets []*net.IPNet }
+	policies := map[string]policy{}
+	for _, t := range cfg.Security.CallbackTargets {
+		key := net.JoinHostPort(strings.ToLower(t.Host), fmt.Sprint(t.Port))
+		p := policies[key]
+		for _, c := range t.AllowedCIDRs {
+			if _, n, err := net.ParseCIDR(c); err == nil {
+				p.nets = append(p.nets, n)
+			}
+		}
+		policies[key] = p
+	}
 	dialer := &net.Dialer{Timeout: 5 * time.Second}
-	dialer.Control = func(network, address string, _ syscall.RawConn) error {
+	dial := func(ctx context.Context, network, address string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(address)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		ip := net.ParseIP(host)
-		if ip == nil || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() {
-			return errTargetNotAllowed
+		p, ok := policies[net.JoinHostPort(strings.ToLower(host), port)]
+		if !ok {
+			return nil, errTargetNotAllowed
 		}
-		for _, t := range cfg.Security.CallbackTargets {
-			if fmt.Sprint(t.Port) != port {
+		var ips []net.IP
+		if ip := net.ParseIP(host); ip != nil {
+			ips = []net.IP{ip}
+		} else {
+			addrs, err := lookup(ctx, host)
+			if err != nil {
+				return nil, &net.OpError{Op: "dial", Net: network, Err: err}
+			}
+			for _, a := range addrs {
+				ips = append(ips, a.IP)
+			}
+		}
+		for _, ip := range ips {
+			if ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() {
 				continue
 			}
-			for _, c := range t.AllowedCIDRs {
-				if _, n, err := net.ParseCIDR(c); err == nil && n.Contains(ip) {
-					return nil
+			for _, n := range p.nets {
+				if n.Contains(ip) {
+					return dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
 				}
 			}
 		}
-		return errTargetNotAllowed
+		return nil, errTargetNotAllowed
 	}
-	tr := &http.Transport{DialContext: dialer.DialContext, Proxy: nil, MaxIdleConnsPerHost: 4, IdleConnTimeout: 60 * time.Second}
+	tr := &http.Transport{DialContext: dial, Proxy: nil, MaxIdleConnsPerHost: 4, IdleConnTimeout: 60 * time.Second}
 	return &http.Client{Transport: tr, Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
