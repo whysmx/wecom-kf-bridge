@@ -228,7 +228,9 @@ func TestTransitionsAreCompareAndSet(t *testing.T) {
 	m, _ := s.InboxByExternalID(ctx, "s1", "m")
 	var wg sync.WaitGroup
 	var ok atomic.Int32
-	for _, to := range []string{InboxClassified, InboxIgnored, InboxUnsupported} {
+	// Both targets are terminal, so even a fully serialised schedule lets
+	// exactly one writer win (RECEIVED->CLASSIFIED->IGNORED would be legal).
+	for _, to := range []string{InboxIgnored, InboxUnsupported, InboxIgnored} {
 		wg.Add(1)
 		go func(to string) {
 			defer wg.Done()
