@@ -82,11 +82,14 @@ type Config struct {
 	// (wecom.service_state_map). Handover transfers to the value mapped to
 	// WAITING_HUMAN, recovery to AI_ELIGIBLE.
 	ServiceStateMap map[int]string
-	SessionTTL      time.Duration
-	StepUpTTL       time.Duration
-	MaxSessions     int
-	Clock           func() time.Time
-	Random          io.Reader
+	// GatewayBaseURL is the public base URL cc-connect uses as api_base_url
+	// (server.public_base_url). Empty exports a placeholder to fill in.
+	GatewayBaseURL string
+	SessionTTL     time.Duration
+	StepUpTTL      time.Duration
+	MaxSessions    int
+	Clock          func() time.Time
+	Random         io.Reader
 }
 
 type Console struct {

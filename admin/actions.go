@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -398,10 +399,40 @@ func (c *Console) bindingExport(r *http.Request, s *session) result {
 	var cr Credentials
 	_ = json.Unmarshal([]byte(raw), &cr)
 	c.mu.Lock()
-	s.pendingExport = fmt.Sprintf("[platforms.options]  # cc-connect wecom\ncorp_id = %q\ncorp_secret = %q\ncallback_token = %q\ncallback_aes_key = %q\n", cr.CorpID, cr.Secret, cr.Token, cr.AESKey)
+	s.pendingExport = c.exportTOML(b, cr)
 	c.mu.Unlock()
 	c.audit(r, "binding", b.ID, "export", "ok", "", b.Revision)
 	return result{location: "/admin/bindings"}
+}
+
+// exportTOML renders every cc-connect field from docs/03 §2 (#45).
+func (c *Console) exportTOML(b state.Binding, cr Credentials) string {
+	port, path := "REPLACE_WITH_CC_CONNECT_PORT", "/wecom/callback"
+	if u, err := url.Parse(b.CallbackURL); err == nil && u.Host != "" {
+		if u.Port() != "" {
+			port = u.Port()
+		}
+		if u.Path != "" {
+			path = u.Path
+		}
+	}
+	base := strings.TrimRight(c.cfg.GatewayBaseURL, "/")
+	if base == "" {
+		base = "REPLACE_WITH_GATEWAY_BASE_URL"
+	}
+	agent := cr.AgentID
+	if agent == "" {
+		agent = "REPLACE_WITH_AGENT_ID"
+	}
+	var sb strings.Builder
+	sb.WriteString("# cc-connect WeChat Work (wecom) platform for binding " + b.ID + "; virtual credentials only, never the real WeChat secret.\n")
+	sb.WriteString("[[projects.platforms]]\ntype = \"wecom\"\n[projects.platforms.options]\n")
+	for _, kv := range [][2]string{{"corp_id", cr.CorpID}, {"corp_secret", cr.Secret}, {"agent_id", agent}, {"callback_token", cr.Token}, {"callback_aes_key", cr.AESKey}, {"port", port}, {"callback_path", path}, {"api_base_url", base}} {
+		fmt.Fprintf(&sb, "%s = %q\n", kv[0], kv[1])
+	}
+	sb.WriteString("# The gateway authorizes customers and signs callbacks itself; narrow this to explicit UIDs if you prefer (UIDs change on generation rotation).\n")
+	sb.WriteString("allow_from = \"*\"\n")
+	return sb.String()
 }
 
 // ---- 客户与接管 ----

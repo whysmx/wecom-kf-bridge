@@ -23,6 +23,9 @@ import (
 type Config struct {
 	Server struct {
 		PublicListen string `json:"public_listen"`
+		// PublicBaseURL is the gateway URL cc-connect uses as api_base_url
+		// (exported in the binding config). Optional.
+		PublicBaseURL string `json:"public_base_url"`
 	} `json:"server"`
 	// Admin is the single-enterprise console (docs/17). It is disabled
 	// unless listen is set, and never shares the public listener.
@@ -193,6 +196,11 @@ func (c Config) Validate() error {
 			errs = append(errs, "admin.insecure_cookie is only allowed for a loopback admin.listen")
 		case !c.Admin.InsecureCookie && !strings.HasPrefix(origin, "https://"):
 			errs = append(errs, "admin.origin must be https:// (Secure cookie); for plain http on loopback set admin.insecure_cookie")
+		}
+	}
+	if c.Server.PublicBaseURL != "" {
+		if u, err := url.Parse(c.Server.PublicBaseURL); err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || u.RawQuery != "" || u.Fragment != "" || strings.Contains(u.Path, "/cgi-bin") {
+			errs = append(errs, "server.public_base_url must be an http(s) base URL without userinfo, query, fragment or /cgi-bin")
 		}
 	}
 	if c.Storage.Database == "" {

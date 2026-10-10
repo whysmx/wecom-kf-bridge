@@ -125,3 +125,40 @@ func TestMissingAccountBlocksSends(t *testing.T) {
 		t.Fatal("already unknown re-marked")
 	}
 }
+
+func TestRotateRestoreBindingSecretStore(t *testing.T) {
+	s, _ := faultStore(t)
+	ctx := context.Background()
+	if _, err := s.RotateBindingSecret(ctx, "b1", 99, "x"); !errors.Is(err, ErrConflict) {
+		t.Fatal(err)
+	}
+	b, err := s.RotateBindingSecret(ctx, "b1", 1, "new")
+	if err != nil || b.Revision != 2 {
+		t.Fatal(b, err)
+	}
+	if err := s.RestoreBindingSecret(ctx, "b1", "old", false); err != nil {
+		t.Fatal(err)
+	}
+	if raw, exp, _ := s.BindingSecret(ctx, "b1"); raw != "old" || exp {
+		t.Fatal(raw, exp)
+	}
+	if err := s.RestoreBindingSecret(ctx, "nope", "x", true); !errors.Is(err, ErrNotFound) {
+		t.Fatal(err)
+	}
+	if _, err := s.DiagnosticEnterprise(ctx, "outbox", "missing"); !errors.Is(err, ErrNotFound) {
+		t.Fatal(err)
+	}
+	s.Close()
+	if _, err := s.RotateBindingSecret(ctx, "b1", 2, "x"); err == nil {
+		t.Fatal("closed")
+	}
+	if err := s.RestoreBindingSecret(ctx, "b1", "x", true); err == nil {
+		t.Fatal("closed")
+	}
+	if _, err := s.MarkMissingAccounts(ctx, nil); err == nil {
+		t.Fatal("closed")
+	}
+	if _, err := s.DiagnosticEnterprise(ctx, "inbox", "1"); err == nil {
+		t.Fatal("closed")
+	}
+}

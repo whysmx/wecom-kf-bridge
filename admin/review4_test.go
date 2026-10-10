@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"errors"
+	"html"
 	"net/http"
 	"net/url"
 	"strings"
@@ -163,5 +164,38 @@ func TestSyncMarksMissingAccounts(t *testing.T) {
 	trig(t, e, "m1", "BEFORE UPDATE ON kf_accounts WHEN NEW.status='UNKNOWN'")
 	if w := cl.post("/admin/accounts/sync", nil); w.Code != http.StatusServiceUnavailable {
 		t.Fatal(w.Code)
+	}
+}
+
+// #45: the one-time export carries every cc-connect field (docs/03 §2).
+func TestExportHasAllCCConnectFields(t *testing.T) {
+	for _, base := range []string{"https://bridge.example.com/", ""} {
+		e := newEnv(t, func(c *Config) { c.GatewayBaseURL = base })
+		ctx := context.Background()
+		must(t, e.st.SaveBindingSecret(ctx, "b1", `{"corp_id":"bridge_x","secret":"S3CRET","token":"TOK","aes_key":"AES","agent_id":"1000002"}`, 1))
+		cl := e.login()
+		cl.stepUp()
+		cl.post("/admin/bindings/b1/export", nil)
+		body := html.UnescapeString(cl.get("/admin/bindings").Body.String())
+		want := []string{`[[projects.platforms]]`, `type = "wecom"`, `corp_id = "bridge_x"`, `corp_secret = "S3CRET"`, `agent_id = "1000002"`, `callback_token = "TOK"`, `callback_aes_key = "AES"`, `port = "9000"`, `callback_path = "/wecom"`, `allow_from = "*"`}
+		if base != "" {
+			want = append(want, `api_base_url = "https://bridge.example.com"`)
+		} else {
+			want = append(want, `api_base_url = "REPLACE_WITH_GATEWAY_BASE_URL"`)
+		}
+		for _, w := range want {
+			if !strings.Contains(body, w) {
+				t.Errorf("base %q: export missing %s", base, w)
+			}
+		}
+	}
+	// no callback port / agent -> explicit placeholders
+	e := newEnv(t)
+	b := state.Binding{ID: "b1", CallbackURL: "http://cc"}
+	out := e.c.exportTOML(b, Credentials{CorpID: "c"})
+	for _, w := range []string{"REPLACE_WITH_CC_CONNECT_PORT", "REPLACE_WITH_AGENT_ID", `callback_path = "/wecom/callback"`} {
+		if !strings.Contains(out, w) {
+			t.Error(w)
+		}
 	}
 }

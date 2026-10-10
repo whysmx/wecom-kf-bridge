@@ -306,7 +306,7 @@ func (g *Gateway) buildAdmin(cfg Config) (http.Handler, error) {
 	}
 	c, err := admin.New(admin.Config{
 		Store: g.Store, KF: consoleKF{client: g.adapter.clients[e.ID], tokens: g.adapter.tokens[e.ID]}, Runtime: consoleRuntime{g: g, cfg: cfg},
-		PasswordHash: []byte(hash), Origin: origin, EnterpriseID: e.ID, CompanyName: cfg.Admin.CompanyName, CorpID: e.CorpID, Settings: settings,
+		PasswordHash: []byte(hash), Origin: origin, EnterpriseID: e.ID, CompanyName: cfg.Admin.CompanyName, GatewayBaseURL: cfg.Server.PublicBaseURL, CorpID: e.CorpID, Settings: settings,
 		InsecureCookie:  cfg.Admin.InsecureCookie,
 		ServiceStateMap: g.adapter.states,
 		SessionTTL:      time.Duration(cfg.Admin.SessionTTLMinutes) * time.Minute, MaxSessions: cfg.Admin.MaxSessions,

@@ -1,6 +1,7 @@
 {
   "server": {
-    "public_listen": "127.0.0.1:8090"
+    "public_listen": "127.0.0.1:8090",
+    "public_base_url": "https://bridge.example.com"
   },
   "admin": {
     "listen": "127.0.0.1:8091",

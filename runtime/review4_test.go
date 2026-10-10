@@ -61,3 +61,13 @@ func TestAPIBaseURLStrict(t *testing.T) {
 		}
 	}
 }
+
+func TestPublicBaseURLValidation(t *testing.T) {
+	for u, ok := range map[string]bool{"https://bridge.example.com": true, "": true, "ftp://x": false, "https://u:p@x": false, "https://x?a=1": false, "https://x/cgi-bin": false, "https://x/#f": false} {
+		c := gatewayConfig(t)
+		c.Server.PublicBaseURL = u
+		if (c.Validate() == nil) != ok {
+			t.Errorf("%q", u)
+		}
+	}
+}
