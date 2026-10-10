@@ -226,7 +226,12 @@ func (s *Store) UpdateBinding(ctx context.Context, id string, expected int64, fn
 // RotateBindingCustomers gives every customer of a binding a new
 // generation and UID in one transaction (rebind, docs/17 §3.3): old UIDs
 // become stale and can never send again.
+//
+// It holds the binding lock, the same lock SendGuarded takes around every
+// outbound chunk, so a rotation can never complete between a send's
+// precondition check and the outbound call (#30).
 func (s *Store) RotateBindingCustomers(ctx context.Context, bindingID string) (int, error) {
+	defer s.lock("binding:" + bindingID)()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err

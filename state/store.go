@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
+	sqlite "modernc.org/sqlite"
 )
 
 var (
@@ -220,14 +220,30 @@ type Options struct {
 
 func Open(path string) (*Store, error) { return OpenWithOptions(path, Options{}) }
 
+// Every connection the sqlite driver opens (via OpenWithOptions or a
+// caller-supplied *sql.DB passed to New) runs these pragmas, so foreign keys
+// and the busy timeout hold on every pooled connection (#38).
+const connPragmas = "PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000"
+
+func init() {
+	sqlite.RegisterConnectionHook(func(conn sqlite.ExecQuerierContext, _ string) error {
+		_, err := conn.ExecContext(context.Background(), connPragmas, nil)
+		return err
+	})
+}
+
+// MaxOpenConns bounds the pool: SQLite has one writer; a few readers are
+// enough and keep file handles bounded.
+const MaxOpenConns = 8
+
 // OpenWithOptions opens a SQLite file with the supplied options.
 func OpenWithOptions(path string, opts Options) (*Store, error) {
-	// Per-connection pragmas go in the DSN so every pooled connection gets
-	// foreign keys and the busy timeout, not only the first one.
-	db, err := sql.Open("sqlite", path+"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)")
+	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, err
 	}
+	db.SetMaxOpenConns(MaxOpenConns)
+	db.SetMaxIdleConns(MaxOpenConns)
 	s, err := New(db, opts)
 	if err != nil {
 		_ = db.Close()
@@ -1147,9 +1163,6 @@ func (s *Store) BlockOutbox(ctx context.Context, id, category string) (OutboxMes
 	if err != nil {
 		return o, err
 	}
-	if o.State != OutboxCreated && o.State != OutboxValidated {
-		return o, fmt.Errorf("%w: outbox %s -> BLOCKED", ErrInvalidState, o.State)
-	}
 	defer s.lock("customer:" + o.CustomerID)()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1157,13 +1170,21 @@ func (s *Store) BlockOutbox(ctx context.Context, id, category string) (OutboxMes
 	}
 	defer tx.Rollback()
 	now := unix(s.now())
-	if _, err = tx.ExecContext(ctx, `UPDATE outbox SET state=?,error_category=?,budget_reserved=0,updated_at=? WHERE id=?`, OutboxBlocked, category, now, id); err != nil {
+	// #31: release budget only if this very transition happens: both
+	// statements are conditional on the outbox still being CREATED or
+	// VALIDATED, inside one write transaction.
+	const blockable = `state IN ('CREATED','VALIDATED')`
+	if _, err = tx.ExecContext(ctx, `UPDATE customers SET window_used=MAX(0,window_used-(SELECT budget_units FROM outbox WHERE id=?)),updated_at=? WHERE id=? AND EXISTS(SELECT 1 FROM outbox WHERE id=? AND budget_reserved=1 AND `+blockable+`)`, id, now, o.CustomerID, id); err != nil {
 		return o, err
 	}
-	if o.BudgetReserved {
-		if _, err = tx.ExecContext(ctx, `UPDATE customers SET window_used=MAX(0,window_used-?),updated_at=? WHERE id=?`, o.BudgetUnits, now, o.CustomerID); err != nil {
-			return o, err
-		}
+	r, err := tx.ExecContext(ctx, `UPDATE outbox SET state=?,error_category=?,budget_reserved=0,updated_at=? WHERE id=? AND `+blockable, OutboxBlocked, category, now, id)
+	if err != nil {
+		return o, err
+	}
+	if n, _ := r.RowsAffected(); n != 1 {
+		var cur string
+		_ = tx.QueryRowContext(ctx, `SELECT state FROM outbox WHERE id=?`, id).Scan(&cur)
+		return o, fmt.Errorf("%w: outbox %s -> BLOCKED", ErrInvalidState, cur)
 	}
 	if err = tx.Commit(); err != nil {
 		return o, err

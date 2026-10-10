@@ -1,0 +1,100 @@
+package state
+
+import (
+	"context"
+	"errors"
+	"sync"
+	"testing"
+	"time"
+)
+
+// #30: a rotation cannot complete while a guarded send is in progress, and
+// the send after it is refused as stale.
+func TestRotateBindingCustomersSerialisesWithSendGuarded(t *testing.T) {
+	s, c := faultStore(t)
+	ctx := context.Background()
+	o, err := s.CreateOutbox(ctx, OutboxMessage{CustomerID: c.ID, Generation: c.Generation, UID: c.UID, Body: "x", BudgetUnits: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.MarkOutboxSending(ctx, o.ID); err != nil {
+		t.Fatal(err)
+	}
+	inSend := make(chan struct{})
+	var sendEnd, rotEnd time.Time
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_ = s.SendGuarded(ctx, o.ID, func() error {
+			close(inSend)
+			time.Sleep(150 * time.Millisecond)
+			sendEnd = time.Now()
+			return nil
+		})
+	}()
+	<-inSend
+	if _, err := s.RotateBindingCustomers(ctx, "b1"); err != nil {
+		t.Fatal(err)
+	}
+	rotEnd = time.Now()
+	wg.Wait()
+	if rotEnd.Before(sendEnd) {
+		t.Fatal("rotation completed while the old generation was sending")
+	}
+	err = s.SendGuarded(ctx, o.ID, func() error { t.Fatal("old generation sent after rotation"); return nil })
+	if !errors.Is(err, ErrStaleGeneration) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+// #31: BlockOutbox never overwrites SENDING/UPSTREAM_ACCEPTED and never
+// releases budget it did not take back.
+func TestBlockOutboxIsCompareAndSet(t *testing.T) {
+	s, c := faultStore(t)
+	ctx := context.Background()
+	used := func() int { cu, _ := s.Customer(ctx, c.ID); return cu.WindowUsed }
+	o, _ := s.CreateOutbox(ctx, OutboxMessage{CustomerID: c.ID, Generation: c.Generation, UID: c.UID, Body: "x", BudgetUnits: 1})
+	base := used()
+	if base != 1 {
+		t.Fatalf("reserved %d", base)
+	}
+	s.MarkOutboxSending(ctx, o.ID)
+	if _, err := s.BlockOutbox(ctx, o.ID, "late"); !errors.Is(err, ErrInvalidState) {
+		t.Fatal("SENDING overwritten", err)
+	}
+	if got, _ := s.Outbox(ctx, o.ID); got.State != OutboxSending || used() != 1 {
+		t.Fatal("state/budget changed", got.State, used())
+	}
+	s.TransitionOutbox(ctx, o.ID, OutboxUpstreamAccepted, "")
+	if _, err := s.BlockOutbox(ctx, o.ID, "late"); !errors.Is(err, ErrInvalidState) || used() != 1 {
+		t.Fatal("UPSTREAM_ACCEPTED overwritten or budget released")
+	}
+	// concurrent: block vs mark-sending -> budget released at most once
+	o2, _ := s.CreateOutbox(ctx, OutboxMessage{CustomerID: c.ID, Generation: c.Generation, UID: c.UID, Body: "y", BudgetUnits: 1})
+	var wg sync.WaitGroup
+	var blocked bool
+	wg.Add(2)
+	go func() { defer wg.Done(); _, err := s.BlockOutbox(ctx, o2.ID, "x"); blocked = err == nil }()
+	go func() { defer wg.Done(); s.MarkOutboxSending(ctx, o2.ID) }()
+	wg.Wait()
+	got, _ := s.Outbox(ctx, o2.ID)
+	want := 2
+	if blocked {
+		want = 1
+		if got.State != OutboxBlocked {
+			t.Fatal(got.State)
+		}
+	} else if got.State != OutboxSending {
+		t.Fatal(got.State)
+	}
+	if used() != want {
+		t.Fatalf("budget %d want %d (blocked=%v)", used(), want, blocked)
+	}
+	if _, err := s.BlockOutbox(ctx, o2.ID, "again"); err == nil {
+		t.Fatal("double block")
+	}
+	if used() != want {
+		t.Fatal("budget released twice")
+	}
+}
