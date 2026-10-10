@@ -126,6 +126,7 @@ type Store interface {
 	CreateOutbox(context.Context, state.OutboxMessage) (state.OutboxMessage, error)
 	BlockOutbox(context.Context, string, string) (state.OutboxMessage, error)
 	MarkOutboxSending(context.Context, string) (state.OutboxMessage, error)
+	SendGuarded(context.Context, string, func() error) error
 	RecordOutboxChunk(context.Context, string, int, string) error
 	TransitionOutbox(context.Context, string, string, string) (state.OutboxMessage, error)
 	MarkOutboxUnknown(context.Context, string, string) (state.OutboxMessage, error)
@@ -526,7 +527,17 @@ func (s *Server) send(ctx context.Context, b Binding, sc state.Customer, agent, 
 		return outboxRejection(err)
 	}
 	for i, ch := range chunks {
-		msgID, err := s.cfg.Adapter.SendText(ctx, SendRequest{BindingID: b.ID, OutboxID: o.ID, ToUser: sc.UID, AgentID: agent, MsgType: "text", Content: ch, Customer: c, Chunk: i + 1, Chunks: len(chunks)})
+		var msgID string
+		var sendErr error
+		// Re-verify generation, fence, binding active and revision right
+		// before every outbound call (#25, #27).
+		if gerr := s.cfg.Store.SendGuarded(ctx, o.ID, func() error {
+			msgID, sendErr = s.cfg.Adapter.SendText(ctx, SendRequest{BindingID: b.ID, OutboxID: o.ID, ToUser: sc.UID, AgentID: agent, MsgType: "text", Content: ch, Customer: c, Chunk: i + 1, Chunks: len(chunks)})
+			return nil
+		}); gerr != nil {
+			return s.sendAborted(ctx, o, sc.ID, i, len(chunks), gerr)
+		}
+		err := sendErr
 		if err == nil {
 			if e := s.cfg.Store.RecordOutboxChunk(context.WithoutCancel(ctx), o.ID, i+1, msgID); e != nil {
 				// Sent upstream but not recorded: the overall result is unknown.
@@ -541,6 +552,20 @@ func (s *Server) send(ctx context.Context, b Binding, sc state.Customer, agent, 
 		return errAPI{ErrCodeUnknown, "send result unknown", http.StatusBadGateway}
 	}
 	return nil
+}
+
+// sendAborted handles a send whose preconditions stopped holding between
+// chunks: nothing more goes out, the row is recorded REJECTED with the
+// reason and progress, and the budget of unsent chunks is released.
+func (s *Server) sendAborted(ctx context.Context, o state.OutboxMessage, customerID string, sent, total int, err error) error {
+	bg := context.WithoutCancel(ctx)
+	progress := fmt.Sprintf("%d/%d", sent, total)
+	s.cfg.Logger.Log("outbox_send_aborted", map[string]any{"outbox_id": o.ID, "chunks": progress, "error": err})
+	if _, e := s.cfg.Store.TransitionOutbox(bg, o.ID, state.OutboxRejected, "precondition_lost:"+progress); e != nil {
+		return errAPI{ErrCodeUnknown, "send state unknown", http.StatusBadGateway}
+	}
+	_ = s.cfg.Store.ReleaseBudget(bg, customerID, total-sent)
+	return outboxRejection(err)
 }
 
 // sendFailed stops at the failing chunk (no further chunks, no background
