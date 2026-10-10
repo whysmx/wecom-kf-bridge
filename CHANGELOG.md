@@ -9,7 +9,6 @@
 ### 修复
 
 - SQLite 的 `foreign_keys` 与 `busy_timeout` 改为在 DSN 中设置，连接池中每个连接都生效（此前只作用于首个连接，并发写入可能出现 SQLITE_BUSY，其他连接不执行外键约束）。
-- 修正并发 inbox CAS 测试的调度相关性，避免误报。
 
 ### 已知不足
 
