@@ -1,0 +1,51 @@
+package runtime
+
+import (
+	"context"
+	"strings"
+	"testing"
+)
+
+// #41: binding env vars are needed only for the first initialisation.
+func TestRestartWithoutLegacyBindingEnv(t *testing.T) {
+	c := gatewayConfig(t)
+	g, err := Build(context.Background(), c, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gettoken(t, g.Handler, "bridge_a", gatewayEnv["G_VSECRET"]) != 0 {
+		t.Fatal("first start")
+	}
+	if _, exported, err := g.Store.BindingSecret(context.Background(), "b1"); err != nil || !exported {
+		t.Fatal("env credentials not persisted as already-exported", err)
+	}
+	g.Close()
+	for _, k := range []string{"G_VSECRET", "G_VTOK", "G_VAES"} {
+		t.Setenv(k, "")
+	}
+	g, err = Build(context.Background(), c, nil)
+	if err != nil {
+		t.Fatal("restart required legacy env:", err)
+	}
+	if gettoken(t, g.Handler, "bridge_a", gatewayEnv["G_VSECRET"]) != 0 {
+		t.Fatal("stored credentials not used after restart")
+	}
+	g.Close()
+	// a changed env value is ignored once stored (DB is the source of truth)
+	t.Setenv("G_VSECRET", "different-secret-value-xxxxxxxx")
+	g, err = Build(context.Background(), c, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gettoken(t, g.Handler, "bridge_a", "different-secret-value-xxxxxxxx") == 0 {
+		t.Fatal("env overrode stored credentials")
+	}
+	g.Close()
+	// fresh DB without env fails clearly
+	c2 := gatewayConfig(t)
+	t.Setenv("G_VTOK", "")
+	_, err = Build(context.Background(), c2, nil)
+	if err == nil || !strings.Contains(err.Error(), "first start") || !strings.Contains(err.Error(), "G_VTOK") {
+		t.Fatal("fresh DB error unclear:", err)
+	}
+}

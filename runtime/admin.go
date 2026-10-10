@@ -37,6 +37,39 @@ func (g *Gateway) bootstrapBinding(ctx context.Context, b state.Binding) (state.
 	}
 }
 
+// bindingCredentials resolves a configured binding's virtual credentials
+// (#41): once SQLite holds them, the *_env variables are no longer needed
+// (and ignored if set). On first initialisation they are read from the
+// environment and persisted sealed, marked as already exported.
+func (g *Gateway) bindingCredentials(ctx context.Context, b BindingConfig, sb state.Binding) (bridge.Binding, error) {
+	stored := g.withStoredCredentials(ctx, bridge.Binding{ID: b.ID, AgentID: b.AgentID})
+	if stored.CorpID != "" {
+		return stored, nil
+	}
+	cr := admin.Credentials{CorpID: b.VirtualCorpID, AgentID: b.AgentID}
+	for _, f := range []struct {
+		env string
+		dst *string
+	}{{b.VirtualSecretEnv, &cr.Secret}, {b.CallbackTokenEnv, &cr.Token}, {b.CallbackAESKeyEnv, &cr.AESKey}} {
+		v, err := secretEnv(f.env)
+		if err != nil {
+			return bridge.Binding{}, fmt.Errorf("binding %s: no credentials stored in the database yet, first start needs the environment: %w", b.ID, err)
+		}
+		*f.dst = v
+	}
+	if _, err := wecom.DecodeAESKey(cr.AESKey); err != nil {
+		return bridge.Binding{}, fmt.Errorf("binding %s: %w", b.ID, err)
+	}
+	raw, _ := json.Marshal(cr)
+	if err := g.Store.SaveBindingSecret(ctx, b.ID, string(raw), sb.Revision); err != nil {
+		return bridge.Binding{}, err
+	}
+	if _, err := g.Store.ExportBindingSecret(ctx, b.ID); err != nil {
+		return bridge.Binding{}, err
+	}
+	return bridge.Binding{ID: b.ID, CorpID: cr.CorpID, CorpSecret: cr.Secret, AgentID: cr.AgentID, CallbackToken: cr.Token, CallbackAESKey: cr.AESKey}, nil
+}
+
 // withStoredCredentials overlays console-generated virtual credentials.
 func (g *Gateway) withStoredCredentials(ctx context.Context, vb bridge.Binding) bridge.Binding {
 	raw, _, err := g.Store.BindingSecret(ctx, vb.ID)

@@ -116,21 +116,6 @@ func (g *Gateway) wire(ctx context.Context, cfg Config, logger Logger) error {
 	configured := map[string]bool{}
 	for _, b := range cfg.Bindings {
 		configured[b.ID] = true
-		vsecret, err := secretEnv(b.VirtualSecretEnv)
-		if err != nil {
-			return err
-		}
-		vtok, err := secretEnv(b.CallbackTokenEnv)
-		if err != nil {
-			return err
-		}
-		vaes, err := secretEnv(b.CallbackAESKeyEnv)
-		if err != nil {
-			return err
-		}
-		if _, err := wecom.DecodeAESKey(vaes); err != nil {
-			return fmt.Errorf("binding %s: %w", b.ID, err)
-		}
 		rev := b.CredentialRevision
 		if rev <= 0 {
 			rev = 1
@@ -139,8 +124,11 @@ func (g *Gateway) wire(ctx context.Context, cfg Config, logger Logger) error {
 		if err != nil {
 			return err
 		}
-		vb := bridge.Binding{ID: b.ID, CorpID: b.VirtualCorpID, CorpSecret: vsecret, AgentID: b.AgentID, CallbackToken: vtok, CallbackAESKey: vaes}
-		if err := g.register(ctx, sb, g.withStoredCredentials(ctx, vb)); err != nil {
+		vb, err := g.bindingCredentials(ctx, b, sb)
+		if err != nil {
+			return err
+		}
+		if err := g.register(ctx, sb, vb); err != nil {
 			return err
 		}
 	}
