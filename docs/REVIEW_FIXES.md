@@ -110,3 +110,30 @@
 | 38 | PRAGMA 只作用于取得的连接 | 改用 modernc 驱动的连接钩子 `RegisterConnectionHook`：经 `sqlite` 驱动打开的每个连接（`OpenWithOptions` 及调用方传给 `New` 的 `*sql.DB`）都执行 `foreign_keys=ON; busy_timeout=5000`；`OpenWithOptions` 设连接上限 8（`New` 保留调用方设置） | state/store.go | `TestEveryPooledConnectionIsInitialised`（同时持有 8 个连接逐一检查 foreign_keys=1、busy_timeout=5000，覆盖两种入口） | 8ca267b |
 
 **此前一次性 admin 包测试失败**：在 CPU 负载下（并行运行 state/runtime race 测试）以 `-race -count=10 -cpu=1,2,8` 运行 admin 包 30 次未复现。该失败发生在 v0.1.3 连接级 PRAGMA 修复之前，最可能的原因是非首个连接缺失 busy_timeout 导致的 SQLITE_BUSY；#38 进一步把初始化改为连接钩子覆盖所有入口。
+
+## 第四轮评审（#39-#45，v0.1.5，快速上线范围）
+
+| # | 问题 | 修复 | 文件 | 测试 | 提交 |
+|---|------|------|------|------|------|
+| 39 | 后台诊断的 inbox/outbox 查询不限企业；`diagMark` 不校验归属 | `InboxByStates`/`OutboxByStates` 增加必填 enterpriseID（经 bindings.enterprise_id 过滤）；标记前用 `DiagnosticEnterprise` 校验归属，不存在或属其他企业返回 404 | state/admin.go、admin/pages.go、admin/actions.go | `TestDiagnosticsScopedToEnterprise`（其他企业的行不出现在任何视图，标记 404 且未写入）；原测试改为在 e2 范围断言 | 5b5b0f2 |
+| 40 | 凭证轮换先改 binding revision 再保存/应用密钥，失败后版本已变、密钥未同步 | `Store.RotateBindingSecret`：revision+1 与新密钥同一事务；提交后才 `ApplyBinding`；运行时拒绝则 `RestoreBindingSecret` 恢复旧密钥及其导出状态（revision 不回退，保持单调，避免已栅栏的任务复活），旧凭证继续可用；恢复也失败时明确提示重启后以新凭证为准 | state/admin.go、admin/actions.go | `TestRotationRollsBack`（密钥写入失败 revision 不变；应用失败旧密钥恢复且 secret.revision 与 binding 同步=重启加载旧密钥；恢复失败告警；无旧密钥；成功保留 agent_id）、`TestRotateRestoreBindingSecretStore` | ad2384b |
+| 41 | 数据库已有凭证后启动仍强制要求旧 env | 配置绑定的虚拟凭证：库中已有则直接使用（env 可不设，设置也忽略，库为准）；首次初始化从 env 读取并加密保存、标记为已导出；新库缺 env 时报错说明“首次启动需要环境变量”并给出变量名 | runtime/admin.go、runtime/gateway.go | `TestRestartWithoutLegacyBindingEnv` | f3d9957 |
+| 42 | api_base_url 可带 userinfo/query/fragment；URL 可能进入日志和页面 | `Validate` 拒绝 userinfo、query（含空 `?`）、fragment；新增 `wecom.RedactURL`，用于告警日志、设置页，以及 HTTP 传输错误（`url.Error` 内含 `access_token` 查询串）——错误不会再把 token/secret 带进日志、审计或页面提示 | runtime/config.go、wecom/client.go、runtime/gateway.go、runtime/admin.go | `TestAPIBaseURLStrict`、`TestRedactURL`、`TestTransportErrorIsRedacted` | a459618 |
+| 43 | 同步后官方列表中已不存在的账号仍为 ACTIVE | 全部分页成功后，不在列表中的 ACTIVE 账号标记 UNKNOWN（`MarkMissingAccounts`）；部分失败不改动；新建绑定要求 ACTIVE；`sendable` 条件增加“绑定的客服账号若有镜像记录则必须 ACTIVE”，`MarkOutboxSending` 和每个分块的 `SendGuarded` 都会拒绝（`ErrBindingInactive`）；之后同步重新出现则恢复 ACTIVE | state/admin.go、state/store.go、admin/actions.go | `TestSyncMarksMissingAccounts`、`TestMissingAccountBlocksSends` | fd7dcae |
+| 44 | 发布工作流 matrix 各自写 SHA256SUMS，相互覆盖 | 各 matrix 任务只上传自己的安装包；publish 任务汇总后检查恰好 6 个包，一次生成 `SHA256SUMS` 并 `sha256sum -c` 自检后上传 | .github/workflows/release.yml | 本地模拟 linux 打包；以 v0.1.5 Release 实际校验 6 个包均在 SHA256SUMS 中 | 96361b8 |
+| 45 | 一次性导出缺少 agent_id、api_base_url、callback_path、allow_from 等 | 按 docs/03 §2 输出完整 `[[projects.platforms]]` TOML：corp_id、corp_secret、agent_id、callback_token、callback_aes_key、port 与 callback_path（取自绑定 callback_url）、api_base_url（新配置 `server.public_base_url`，未配置则输出明确占位符）、allow_from（`"*"`，附说明：网关自行授权客户并签名回调；UID 随换代变化） | admin/actions.go、admin/admin.go、runtime/config.go、runtime/admin.go | `TestExportHasAllCCConnectFields`、`TestPublicBaseURLValidation` | cbe8788 |
+
+## 暂缓项（Deferred）
+
+快速上线范围内明确不做，供后续版本处理：
+
+1. 尚未与真实企业微信联调；整体仍非生产就绪。
+2. 转人工只转到“待接入池”（WAITING_HUMAN 对应官方值），不支持指定接待人员（官方状态 3 需 `servicer_userid`）。
+3. UNKNOWN 状态的客户不能直接恢复 AI，须先重新转人工并获官方确认。
+4. 删除客服账号时停用关联绑定若中途失败，仅提示警告，不自动回滚或重试。
+5. 凭证轮换应用失败时 revision 已 +1：旧凭证可用，但该绑定在途的 outbox 会被栅栏（需重新生成）；若恢复旧密钥也失败，当前进程与数据库凭证不一致，直到重启。
+6. 只对 WeCom api_base_url 和传输错误做了 URL 脱敏；后台页面中的 callback_url 原样显示（它由 allowlist 校验，但不禁止 query）。
+7. 导出的 `allow_from` 为 `"*"`，依赖网关的客户授权与回调签名；未提供按 UID 白名单导出。
+8. 配置绑定在凭证入库后，修改配置中的 virtual_corp_id / agent_id / *_env 不再生效（以库为准，需在后台轮换）。
+9. Windows 安装包打包步骤未能在本地模拟（无 7z），以 Release 工作流结果为准。
+10. 管理后台相对 docs/17 的既有差异与未做项（见上文“管理后台”一节），本轮未改动。

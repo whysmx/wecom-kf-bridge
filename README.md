@@ -78,6 +78,12 @@ HTTP 回调 200 不代表 AI 已处理；客户端会过滤早于本次进程启
 - 质量门禁：本地 `go build ./...`、`go vet ./...`、`go test -race ./...` 通过；严格覆盖率门禁（>95%，`-coverpkg=./...`）本地通过：总计约 96.0%，各包 root 97.3% / admin 95.8% / runtime 95.7% / state 95.6% / wecom 96.3% / cmd 100%（admin/state/runtime 余量较小）。不得据此宣称已完成生产联调。
 
 
+- 第四轮评审 #39-#45（v0.1.5）：诊断按企业隔离、凭证轮换事务化并可回滚、凭证入库后重启不再需要旧 env、api_base_url 严格校验与 URL 脱敏、官方列表缺失的客服账号标 UNKNOWN 并停止发送、发布 SHA256SUMS 汇总、导出完整 cc-connect 配置（新增可选 `server.public_base_url`）。
+
+### 已知不足 / 暂缓项
+
+尚未真实联调、非生产就绪。其余暂缓项（指定接待人员、UNKNOWN 客户恢复流程、删除账号部分失败不回滚、轮换失败的 revision 栅栏、callback_url 未脱敏、导出 allow_from 为 `*`、凭证入库后配置字段不再生效等）见 docs/REVIEW_FIXES.md“暂缓项（Deferred）”。
+
 ## 发布流程
 
 1. 在 `CHANGELOG.md` 新增 `## vX.Y.Z - YYYY-MM-DD` 小节（中文，Keep a Changelog 分类），并更新 `VERSION`。
