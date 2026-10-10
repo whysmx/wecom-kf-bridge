@@ -53,9 +53,10 @@ jobs:
           cp CHANGELOG.md "${dist}/"
           cp -r docs "${dist}/docs"
           if [ "${GOOS}" = "windows" ]; then
-            (cd "${dist}" && 7z a "../${archive##*/}.zip" .)
+            (cd "${dist}" && 7z a "${archive##*/}.zip" . -xr!*.zip)
           else
-            tar -C "${dist}" -czf "${archive}.tar.gz" .
+            tar -C "${dist}" -czf "/tmp/${archive##*/}.tar.gz" .
+            mv "/tmp/${archive##*/}.tar.gz" "${archive}.tar.gz"
           fi
           sha256sum "${archive}"* >> "${dist}/SHA256SUMS"
       - uses: actions/upload-artifact@v4
