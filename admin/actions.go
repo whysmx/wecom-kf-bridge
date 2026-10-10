@@ -321,26 +321,38 @@ func (c *Console) bindingRebind(r *http.Request, _ *session) result {
 	return result{location: "/admin/bindings", flash: fmt.Sprintf("已改绑，%d 个客户已换新代际", n)}
 }
 
+// bindingRotate (#40): new secret + revision bump commit together; the
+// runtime is switched only after commit; if it refuses, the previous
+// credentials are restored so the old version stays usable.
 func (c *Console) bindingRotate(r *http.Request, _ *session) result {
 	b, res := c.binding(r, true)
 	if res != nil {
 		return *res
 	}
-	nb, err := c.cfg.Store.UpdateBinding(r.Context(), b.ID, b.Revision, func(*state.Binding) {})
-	if err != nil {
-		return conflict("绑定")
-	}
 	cr := c.newCredentials()
-	if raw, _, err := c.cfg.Store.BindingSecret(r.Context(), b.ID); err == nil {
+	oldRaw, oldExported, oldErr := c.cfg.Store.BindingSecret(r.Context(), b.ID)
+	if oldErr == nil {
 		var old Credentials
-		_ = json.Unmarshal([]byte(raw), &old)
+		_ = json.Unmarshal([]byte(oldRaw), &old)
 		cr.AgentID = old.AgentID
 	}
-	if err := c.saveCreds(r.Context(), nb, cr); err != nil {
-		return result{status: http.StatusServiceUnavailable, flash: "保存凭证失败"}
+	raw, _ := json.Marshal(cr)
+	nb, err := c.cfg.Store.RotateBindingSecret(r.Context(), b.ID, b.Revision, string(raw))
+	if errors.Is(err, state.ErrConflict) {
+		return conflict("绑定")
+	} else if err != nil {
+		c.audit(r, "binding", b.ID, "rotate", "failed", "store", b.Revision)
+		return result{status: http.StatusServiceUnavailable, flash: "保存凭证失败，旧凭证保持有效"}
 	}
 	if err := c.cfg.Runtime.ApplyBinding(r.Context(), nb, &cr); err != nil {
-		return result{status: http.StatusInternalServerError, flash: "应用凭证失败"}
+		msg := "应用新凭证失败，已恢复旧凭证（旧凭证继续有效）"
+		if oldErr != nil {
+			msg = "应用新凭证失败；此前无已保存凭证，新凭证将在重启后生效"
+		} else if rerr := c.cfg.Store.RestoreBindingSecret(r.Context(), b.ID, oldRaw, oldExported); rerr != nil {
+			msg = "应用新凭证失败且恢复旧凭证失败：当前进程仍使用旧凭证，重启后将使用新凭证，请导出新凭证或重新轮换"
+		}
+		c.audit(r, "binding", b.ID, "rotate", "rolled_back", err.Error(), b.Revision)
+		return result{status: http.StatusInternalServerError, flash: msg}
 	}
 	c.audit(r, "binding", b.ID, "rotate", "ok", fmt.Sprintf("revision %d -> %d", b.Revision, nb.Revision), b.Revision)
 	return result{location: "/admin/bindings", flash: "已轮换虚拟凭证，旧凭证与令牌立即失效；请一次性导出新凭证"}

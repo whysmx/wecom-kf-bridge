@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -45,5 +46,68 @@ func TestDiagnosticsScopedToEnterprise(t *testing.T) {
 	}
 	if _, err := e.st.DiagnosticEnterprise(ctx, "bad", "1"); err == nil {
 		t.Fatal("bad kind")
+	}
+}
+
+// #40: rotation is atomic; runtime failure restores the old credentials.
+func TestRotationRollsBack(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	cl := e.login()
+	cl.stepUp()
+	old := `{"corp_id":"old","secret":"oldsecret","agent_id":"7"}`
+	must(t, e.st.SaveBindingSecret(ctx, "b1", old, 1))
+	e.st.ExportBindingSecret(ctx, "b1")
+	rev := func() int64 { b, _ := e.st.Binding(ctx, "b1"); return b.Revision }
+
+	// step 1: secret write fails inside the tx -> revision unchanged
+	trig(t, e, "r1", "BEFORE UPDATE ON binding_secrets")
+	if w := cl.post("/admin/bindings/b1/rotate", url.Values{"revision": {"1"}}); w.Code != http.StatusServiceUnavailable {
+		t.Fatal(w.Code)
+	}
+	if rev() != 1 {
+		t.Fatal("revision bumped without secret")
+	}
+	if raw, exp, _ := e.st.BindingSecret(ctx, "b1"); raw != old || !exp {
+		t.Fatal("old secret changed")
+	}
+	e.st.DB().Exec(`DROP TRIGGER r1`)
+
+	// step 2: runtime apply fails -> old secret and export state restored
+	e.rt.applyErr = errors.New("apply")
+	if w := cl.post("/admin/bindings/b1/rotate", url.Values{"revision": {"1"}}); w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), "已恢复旧凭证") {
+		t.Fatal(w.Code)
+	}
+	if raw, exp, _ := e.st.BindingSecret(ctx, "b1"); raw != old || !exp {
+		t.Fatal("old secret not restored", raw)
+	}
+	// restart recovery: what a new process would load is the old secret,
+	// matching what the running runtime still uses.
+	var sealedRev int64
+	e.st.DB().QueryRow(`SELECT revision FROM binding_secrets WHERE binding_id='b1'`).Scan(&sealedRev)
+	if sealedRev != rev() || rev() != 2 {
+		t.Fatal("secret revision out of sync", sealedRev, rev())
+	}
+
+	// step 3: apply fails and restore fails -> warned
+	trig(t, e, "r2", "BEFORE UPDATE ON binding_secrets WHEN NEW.exported_at != 0")
+	if w := cl.post("/admin/bindings/b1/rotate", url.Values{"revision": {"2"}}); w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), "恢复旧凭证失败") {
+		t.Fatal(w.Code)
+	}
+	e.st.DB().Exec(`DROP TRIGGER r2`)
+
+	// no previous secret: apply failure is reported, new one persists
+	e.st.DB().Exec(`DELETE FROM binding_secrets`)
+	if w := cl.post("/admin/bindings/b1/rotate", url.Values{"revision": {"3"}}); w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), "重启后生效") {
+		t.Fatal(w.Code)
+	}
+
+	// success keeps the agent id and syncs revision
+	e.rt.applyErr = nil
+	must(t, e.st.SaveBindingSecret(ctx, "b1", old, rev()))
+	cl.post("/admin/bindings/b1/rotate", url.Values{"revision": {itoa64(rev())}})
+	raw, exp, _ := e.st.BindingSecret(ctx, "b1")
+	if raw == old || exp || !strings.Contains(raw, `"7"`) {
+		t.Fatal("rotation result", raw, exp)
 	}
 }

@@ -278,6 +278,56 @@ func (s *Store) SaveBindingSecret(ctx context.Context, bindingID, plain string, 
 	return err
 }
 
+// RotateBindingSecret bumps the binding revision and stores the new sealed
+// credentials in one transaction (#40): either both change or neither.
+func (s *Store) RotateBindingSecret(ctx context.Context, id string, expected int64, plain string) (Binding, error) {
+	sealed, err := s.sealField(plain, "binding.secret:"+id)
+	if err != nil {
+		return Binding{}, err
+	}
+	defer s.lock("binding:" + id)()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Binding{}, err
+	}
+	defer tx.Rollback()
+	now := unix(s.now())
+	r, err := tx.ExecContext(ctx, `UPDATE bindings SET revision=revision+1,updated_at=? WHERE id=? AND revision=?`, now, id, expected)
+	if err != nil {
+		return Binding{}, err
+	}
+	if err = casApplied(r); err != nil {
+		return Binding{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO binding_secrets(binding_id,sealed,revision,exported_at,updated_at) VALUES(?,?,?,0,?) ON CONFLICT(binding_id) DO UPDATE SET sealed=excluded.sealed,revision=excluded.revision,exported_at=0,updated_at=excluded.updated_at`, id, sealed, expected+1, now); err != nil {
+		return Binding{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return Binding{}, err
+	}
+	return s.Binding(ctx, id)
+}
+
+// RestoreBindingSecret puts back previous credentials (and their export
+// state) after the runtime refused the new ones (#40). The revision is not
+// lowered: revisions stay monotonic so fenced work can never revive.
+func (s *Store) RestoreBindingSecret(ctx context.Context, id, plain string, exported bool) error {
+	sealed, err := s.sealField(plain, "binding.secret:"+id)
+	if err != nil {
+		return err
+	}
+	exp := int64(0)
+	if exported {
+		exp = unix(s.now())
+	}
+	defer s.lock("binding:" + id)()
+	r, err := s.db.ExecContext(ctx, `UPDATE binding_secrets SET sealed=?,exported_at=?,revision=(SELECT revision FROM bindings WHERE id=?),updated_at=? WHERE binding_id=?`, sealed, exp, id, unix(s.now()), id)
+	if err != nil {
+		return err
+	}
+	return rowsOrNotFound(r)
+}
+
 // BindingSecret returns the sealed credentials and whether they were
 // already exported.
 func (s *Store) BindingSecret(ctx context.Context, bindingID string) (string, bool, error) {

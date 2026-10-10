@@ -553,7 +553,8 @@ func TestBindingRuntimeAndStoreFailures(t *testing.T) {
 		t.Fatal("binding save failure", w.Code)
 	}
 	e.st.DB().Exec(`CREATE TRIGGER f4 BEFORE UPDATE ON bindings BEGIN SELECT RAISE(ABORT,'x'); END`)
-	if w := cl.post("/admin/bindings/b1/enable", url.Values{"revision": {"6"}}); w.Code != http.StatusServiceUnavailable {
+	// #40: the failed rotation above did not bump the revision
+	if w := cl.post("/admin/bindings/b1/enable", url.Values{"revision": {"5"}}); w.Code != http.StatusServiceUnavailable {
 		t.Fatal("update failure", w.Code)
 	}
 	e.st.Close()
@@ -809,7 +810,7 @@ func TestWriteFailuresAreReported(t *testing.T) {
 		t.Fatal("sync store failure", w.Code)
 	}
 	trig(t, e, "t5", "BEFORE UPDATE ON bindings")
-	if w := cl.post("/admin/bindings/b1/rotate", url.Values{"revision": {"1"}}); w.Code != http.StatusConflict {
+	if w := cl.post("/admin/bindings/b1/rotate", url.Values{"revision": {"1"}}); w.Code != http.StatusServiceUnavailable {
 		t.Fatal("rotate store failure", w.Code)
 	}
 }
