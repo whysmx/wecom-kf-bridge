@@ -14,7 +14,6 @@ import (
 	"io"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -163,7 +162,7 @@ type Store struct {
 	db    *sql.DB
 	now   func() time.Time
 	uid   func() (string, error)
-	locks sync.Map // key -> *sync.Mutex
+	locks keyedLocks
 }
 
 type Options struct {
@@ -311,17 +310,12 @@ func generationUID(alias string, generation int64) string {
 
 // Lock serializes only the supplied key. It is intentionally local and short;
 // use it around a transaction that decides state, not around HTTP/AI work.
-func (s *Store) lockFor(key string) *sync.Mutex {
-	v, _ := s.locks.LoadOrStore(key, &sync.Mutex{})
-	return v.(*sync.Mutex)
-}
+func (s *Store) lock(key string) func() { return s.locks.acquire(key) }
 func (s *Store) WithLock(key string, fn func() error) error {
 	if key == "" {
 		return ErrInvalidID
 	}
-	m := s.lockFor(key)
-	m.Lock()
-	defer m.Unlock()
+	defer s.lock(key)()
 	return fn()
 }
 func (s *Store) WithCustomerLock(customerID string, fn func() error) error {
@@ -458,9 +452,7 @@ func (s *Store) EnsureCustomer(ctx context.Context, enterpriseID, bindingID, ext
 	if enterpriseID == "" || bindingID == "" || external == "" {
 		return Customer{}, ErrInvalidID
 	}
-	m := s.lockFor("customer-key:" + enterpriseID + ":" + bindingID + ":" + external)
-	m.Lock()
-	defer m.Unlock()
+	defer s.lock("customer-key:" + enterpriseID + ":" + bindingID + ":" + external)()
 	c, err := scanCustomer(s.db.QueryRowContext(ctx, `SELECT id,enterprise_id,binding_id,external_user_id,generation,uid,nickname,nickname_updated_at,official_status,state,fence_generation,revision,created_at,updated_at FROM customers WHERE enterprise_id=? AND binding_id=? AND external_user_id=?`, enterpriseID, bindingID, external))
 	if err == nil {
 		return c, nil
@@ -548,9 +540,7 @@ func validCustomerState(v string) bool {
 // BeginHandover first fences the current generation locally. The caller may
 // then make the official API request without holding a SQL transaction.
 func (s *Store) BeginHandover(ctx context.Context, customerID, reason string) (Customer, error) {
-	m := s.lockFor("customer:" + customerID)
-	m.Lock()
-	defer m.Unlock()
+	defer s.lock("customer:" + customerID)()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Customer{}, err
@@ -586,9 +576,7 @@ func (s *Store) SetHandoverStatus(ctx context.Context, customerID, status, reaso
 	if !validCustomerState(status) || status == CustomerAIEligible {
 		return ErrInvalidState
 	}
-	m := s.lockFor("customer:" + customerID)
-	m.Lock()
-	defer m.Unlock()
+	defer s.lock("customer:" + customerID)()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -609,9 +597,7 @@ func (s *Store) SetHandoverStatus(ctx context.Context, customerID, status, reaso
 }
 
 func (s *Store) RecoverCustomer(ctx context.Context, customerID, reason string) (Customer, error) {
-	m := s.lockFor("customer:" + customerID)
-	m.Lock()
-	defer m.Unlock()
+	defer s.lock("customer:" + customerID)()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Customer{}, err
@@ -660,9 +646,7 @@ func (s *Store) RotateGeneration(ctx context.Context, customerID, reason string)
 // may be retried safely; duplicate external message IDs are ignored. If
 // hasMore is true, a cursor that does not advance returns ErrNoProgress.
 func (s *Store) CommitSyncPage(ctx context.Context, scopeID, nextCursor string, hasMore bool, msgs []InboxMessage) (int, error) {
-	m := s.lockFor("scope:" + scopeID)
-	m.Lock()
-	defer m.Unlock()
+	defer s.lock("scope:" + scopeID)()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -789,9 +773,7 @@ func allowedInbox(a, b string) bool {
 // CreateOutbox validates the current generation and local handover fence while
 // reserving budget in one transaction. The caller must send after commit.
 func (s *Store) CreateOutbox(ctx context.Context, o OutboxMessage) (OutboxMessage, error) {
-	m := s.lockFor("customer:" + o.CustomerID)
-	m.Lock()
-	defer m.Unlock()
+	defer s.lock("customer:" + o.CustomerID)()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return OutboxMessage{}, err
