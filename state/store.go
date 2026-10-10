@@ -687,7 +687,13 @@ func (s *Store) CommitSyncPage(ctx context.Context, scopeID, nextCursor string, 
 		}
 		inserted += int(n)
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE sync_scopes SET cursor=?,pending=0,last_success_at=?,updated_at=? WHERE id=?`, nextCursor, unix(now), unix(now), scopeID); err != nil {
+	// pending is cleared only once the final page (has_more=0) is durable;
+	// a crash mid-pagination must leave the scope marked for resumption.
+	pendingSQL := `UPDATE sync_scopes SET cursor=?,pending=0,last_success_at=?,updated_at=? WHERE id=?`
+	if hasMore {
+		pendingSQL = `UPDATE sync_scopes SET cursor=?,pending=1,last_success_at=?,updated_at=? WHERE id=?`
+	}
+	if _, err = tx.ExecContext(ctx, pendingSQL, nextCursor, unix(now), unix(now), scopeID); err != nil {
 		return 0, err
 	}
 	if err = tx.Commit(); err != nil {
