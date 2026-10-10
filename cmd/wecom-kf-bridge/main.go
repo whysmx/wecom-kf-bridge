@@ -11,16 +11,30 @@ import (
 var exit = os.Exit
 var runContextFn = runContext
 var newApp = bridgeRuntime.NewApp
+var build = bridgeRuntime.Build
 
 func main() { exit(run()) }
 func run() int {
-	return runContextFn(context.Background(), env("LISTEN_ADDR", ":8080"), os.Stdout)
+	return runContextFn(context.Background(), env("WECOM_KF_BRIDGE_CONFIG", "./config.json"), os.Stdout)
 }
 
-func runContext(ctx context.Context, addr string, out interface{ Write([]byte) (int, error) }) int {
+// runContext loads the config, opens SQLite, mounts the compatible API,
+// the tenant callback router and health, and starts the workers. A missing
+// or invalid config is fatal: the gateway never starts health-only.
+func runContext(ctx context.Context, configPath string, out interface{ Write([]byte) (int, error) }) int {
 	logger := bridgeRuntime.NewLogger(out)
-	health := bridgeRuntime.NewHealth(bridgeRuntime.HealthConfig{Logger: logger})
-	app, err := newApp(bridgeRuntime.AppConfig{Addr: addr, Health: health, Logger: logger})
+	cfg, err := bridgeRuntime.LoadConfig(configPath)
+	if err != nil {
+		logger.Error("config_invalid", err, nil)
+		return 1
+	}
+	gw, err := build(ctx, cfg, logger)
+	if err != nil {
+		logger.Error("runtime_init_failed", err, nil)
+		return 1
+	}
+	defer gw.Close()
+	app, err := newApp(bridgeRuntime.AppConfig{Addr: cfg.Server.PublicListen, Handler: gw.Handler, Health: gw.Health, Logger: logger, Workers: gw.Workers, ShutdownTimeout: bridgeRuntime.ShutdownGrace(cfg)})
 	if err != nil {
 		logger.Error("runtime_init_failed", err, nil)
 		return 1

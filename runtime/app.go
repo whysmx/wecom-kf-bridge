@@ -20,11 +20,16 @@ type AppConfig struct {
 	Health          *Health
 	Logger          Logger
 	ShutdownTimeout time.Duration
+	// Workers run for the lifetime of Serve; Shutdown cancels them and
+	// waits for them up to ShutdownTimeout.
+	Workers []Worker
 }
 type App struct {
 	cfg       AppConfig
 	mu        sync.RWMutex
 	server    *http.Server
+	stopW     context.CancelFunc
+	workersWG sync.WaitGroup
 	ready     chan struct{}
 	readyOnce sync.Once
 }
@@ -70,8 +75,14 @@ func (a *App) Serve(ln net.Listener) error {
 		return errors.New("runtime: nil app/listener")
 	}
 	server := &http.Server{Handler: a.cfg.Handler, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
+	wctx, stop := context.WithCancel(context.Background())
 	a.mu.Lock()
 	a.server = server
+	a.stopW = stop
+	for _, w := range a.cfg.Workers {
+		a.workersWG.Add(1)
+		go func(w Worker) { defer a.workersWG.Done(); w.Run(wctx) }(w)
+	}
 	a.mu.Unlock()
 	a.readyOnce.Do(func() { close(a.ready) })
 	if a.cfg.Health != nil {
@@ -100,6 +111,21 @@ func (a *App) Shutdown(ctx context.Context) error {
 		a.cfg.Health.Stop()
 	}
 	err := server.Shutdown(ctx)
+	a.mu.RLock()
+	stop := a.stopW
+	a.mu.RUnlock()
+	if stop != nil {
+		stop()
+	}
+	done := make(chan struct{})
+	go func() { a.workersWG.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		if err == nil {
+			err = fmt.Errorf("runtime: workers did not stop: %w", ctx.Err())
+		}
+	}
 	if a.cfg.Logger != nil {
 		a.cfg.Logger.Log("runtime_stopped", map[string]any{"error": err})
 	}

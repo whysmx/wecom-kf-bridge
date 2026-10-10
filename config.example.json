@@ -1,0 +1,25 @@
+{
+  "server": {"public_listen": "127.0.0.1:8090"},
+  "storage": {"database": "./data/bridge.db"},
+  "security": {
+    "master_key_env": "WECOM_KF_BRIDGE_MASTER_KEY",
+    "callback_targets": [{"host": "cc-host.internal", "port": 8081, "allowed_cidrs": ["10.20.0.0/16"]}]
+  },
+  "workers": {"max_concurrency": 2, "shutdown_grace_seconds": 20},
+  "send_policy": {"window_hours": 48, "max_sends": 5},
+  "wecom": {
+    "api_base_url": "https://qyapi.weixin.qq.com",
+    "customer_origins": [3],
+    "service_state_map": {}
+  },
+  "enterprises": [
+    {"id": "ent1", "tenant_key": "acme", "corp_id": "REPLACE_WITH_REAL_CORP_ID",
+     "secret_env": "ACME_KF_SECRET", "callback_token_env": "ACME_CB_TOKEN", "callback_aes_key_env": "ACME_CB_AES"}
+  ],
+  "bindings": [
+    {"id": "bind1", "enterprise_id": "ent1", "open_kfid": "REPLACE_WITH_OPEN_KFID", "project_id": "proj1",
+     "virtual_corp_id": "bridge_example_a", "agent_id": "1000002",
+     "virtual_secret_env": "BIND1_VIRTUAL_SECRET", "callback_token_env": "BIND1_CB_TOKEN", "callback_aes_key_env": "BIND1_CB_AES",
+     "callback_url": "http://cc-host.internal:8081/wecom/callback"}
+  ]
+}
