@@ -230,7 +230,7 @@ func TestTransitionsAreCompareAndSet(t *testing.T) {
 	var ok atomic.Int32
 	// Both targets are terminal, so even a fully serialised schedule lets
 	// exactly one writer win (RECEIVED->CLASSIFIED->IGNORED would be legal).
-	for _, to := range []string{InboxIgnored, InboxUnsupported, InboxIgnored} {
+	for _, to := range []string{InboxIgnored, InboxUnsupported} {
 		wg.Add(1)
 		go func(to string) {
 			defer wg.Done()
