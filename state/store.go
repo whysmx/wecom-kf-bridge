@@ -222,7 +222,9 @@ func Open(path string) (*Store, error) { return OpenWithOptions(path, Options{})
 
 // OpenWithOptions opens a SQLite file with the supplied options.
 func OpenWithOptions(path string, opts Options) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
+	// Per-connection pragmas go in the DSN so every pooled connection gets
+	// foreign keys and the busy timeout, not only the first one.
+	db, err := sql.Open("sqlite", path+"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, err
 	}
