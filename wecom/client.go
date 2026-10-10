@@ -11,9 +11,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 )
@@ -41,20 +43,180 @@ type Client struct {
 	CorpSecret string
 	Logger     Logger
 	Timeout    time.Duration
+	// RatePerSecond/Burst bound outbound calls from this client (0 = off).
+	RatePerSecond float64
+	Burst         int
+	// MaxRetries bounds retries. Read-only calls retry on transport errors,
+	// HTTP 429 and 5xx; calls with side effects (send_msg, account writes,
+	// service_state/trans) retry only when the connection was never
+	// established, because a lost response there is an UNKNOWN result
+	// (docs/07 §6) and must not be blindly re-sent.
+	MaxRetries int
+	Backoff    time.Duration
+	MaxBackoff time.Duration
+
+	once    sync.Once
+	shared  *http.Client
+	limiter *tokenBucket
+	sleep   func(context.Context, time.Duration) error
 }
 
 func NewClient(baseURL, corpID, corpSecret string) *Client {
-	return &Client{BaseURL: strings.TrimRight(strings.TrimSpace(baseURL), "/"), CorpID: corpID, CorpSecret: corpSecret, Timeout: 30 * time.Second, Logger: nopLogger{}}
+	return &Client{BaseURL: strings.TrimRight(strings.TrimSpace(baseURL), "/"), CorpID: corpID, CorpSecret: corpSecret, Timeout: 30 * time.Second, Logger: nopLogger{}, RatePerSecond: 20, Burst: 10, MaxRetries: 2, Backoff: 200 * time.Millisecond, MaxBackoff: 2 * time.Second}
 }
+
+// httpClient returns one reused *http.Client per Client so connections are
+// pooled instead of creating a new client (and transport) per request.
 func (c *Client) httpClient() *http.Client {
-	if c != nil && c.HTTPClient != nil {
+	if c == nil {
+		return defaultHTTPClient
+	}
+	if c.HTTPClient != nil {
 		return c.HTTPClient
 	}
-	timeout := 30 * time.Second
-	if c != nil && c.Timeout > 0 {
-		timeout = c.Timeout
+	c.init()
+	return c.shared
+}
+var defaultHTTPClient = &http.Client{Timeout: 30 * time.Second}
+
+func (c *Client) init() {
+	c.once.Do(func() {
+		timeout := 30 * time.Second
+		if c.Timeout > 0 {
+			timeout = c.Timeout
+		}
+		c.shared = &http.Client{Timeout: timeout}
+		if c.RatePerSecond > 0 {
+			c.limiter = newTokenBucket(c.RatePerSecond, c.Burst)
+		}
+		if c.sleep == nil {
+			c.sleep = sleepCtx
+		}
+	})
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
 	}
-	return &http.Client{Timeout: timeout}
+}
+
+// sideEffectPaths are never retried after a request may have reached WeCom.
+var sideEffectPaths = map[string]bool{
+	"/cgi-bin/kf/send_msg": true, "/cgi-bin/kf/account/add": true, "/cgi-bin/kf/account/update": true,
+	"/cgi-bin/kf/account/del": true, "/cgi-bin/kf/add_contact_way": true, "/cgi-bin/kf/service_state/trans": true,
+	"/cgi-bin/media/upload": true,
+}
+
+// notConnected reports a failure where the request provably never left:
+// dial/DNS failures. Anything else may have been processed upstream.
+func notConnected(err error) bool {
+	var op *net.OpError
+	if errors.As(err, &op) && op.Op == "dial" {
+		return true
+	}
+	var dns *net.DNSError
+	return errors.As(err, &dns)
+}
+
+// do sends a request built by mk, applying rate limiting and bounded,
+// exponential backoff retries according to the side-effect rules above.
+func (c *Client) do(ctx context.Context, path string, mk func() (*http.Request, error), limit int64) (int, []byte, error) {
+	hc := c.httpClient()
+	c.init()
+	backoff := c.Backoff
+	if backoff <= 0 {
+		backoff = 200 * time.Millisecond
+	}
+	maxB := c.MaxBackoff
+	if maxB <= 0 {
+		maxB = 2 * time.Second
+	}
+	for attempt := 0; ; attempt++ {
+		if c.limiter != nil {
+			if err := c.limiter.wait(ctx, c.sleep); err != nil {
+				return 0, nil, err
+			}
+		}
+		req, err := mk()
+		if err != nil {
+			return 0, nil, err
+		}
+		resp, err := hc.Do(req)
+		retry := false
+		var status int
+		var raw []byte
+		if err != nil {
+			retry = notConnected(err) || !sideEffectPaths[path]
+		} else {
+			status = resp.StatusCode
+			raw, err = io.ReadAll(io.LimitReader(resp.Body, limit))
+			resp.Body.Close()
+			if err == nil && (status == http.StatusTooManyRequests || status >= 500) && !sideEffectPaths[path] {
+				retry = true
+			}
+		}
+		if !retry || attempt >= c.MaxRetries || ctx.Err() != nil {
+			return status, raw, err
+		}
+		if c.Logger != nil {
+			c.Logger.Log("wecom_api_retry", map[string]any{"path": path, "attempt": attempt + 1, "status": status})
+		}
+		if e := c.sleep(ctx, backoff); e != nil {
+			if err == nil {
+				return status, raw, nil
+			}
+			return status, raw, err
+		}
+		backoff *= 2
+		if backoff > maxB {
+			backoff = maxB
+		}
+	}
+}
+
+type tokenBucket struct {
+	mu     sync.Mutex
+	rate   float64
+	burst  float64
+	tokens float64
+	last   time.Time
+	now    func() time.Time
+}
+
+func newTokenBucket(rate float64, burst int) *tokenBucket {
+	if burst < 1 {
+		burst = 1
+	}
+	return &tokenBucket{rate: rate, burst: float64(burst), tokens: float64(burst), now: time.Now}
+}
+func (b *tokenBucket) wait(ctx context.Context, sleep func(context.Context, time.Duration) error) error {
+	for {
+		b.mu.Lock()
+		n := b.now()
+		if !b.last.IsZero() {
+			b.tokens += n.Sub(b.last).Seconds() * b.rate
+			if b.tokens > b.burst {
+				b.tokens = b.burst
+			}
+		}
+		b.last = n
+		if b.tokens >= 1 {
+			b.tokens--
+			b.mu.Unlock()
+			return nil
+		}
+		d := time.Duration((1 - b.tokens) / b.rate * float64(time.Second))
+		b.mu.Unlock()
+		if err := sleep(ctx, d); err != nil {
+			return err
+		}
+	}
 }
 func (c *Client) endpoint(path string) (string, error) {
 	if c == nil || strings.TrimSpace(c.BaseURL) == "" {
@@ -130,23 +292,25 @@ func (c *Client) doJSON(ctx context.Context, method, path, token string, query u
 		}
 		body = bytes.NewReader(b)
 	}
-	req, e := http.NewRequestWithContext(ctx, method, u, body)
+	var payload []byte
+	if body != nil {
+		payload, _ = io.ReadAll(body)
+	}
+	status, raw, e := c.do(ctx, path, func() (*http.Request, error) {
+		var rd io.Reader
+		if payload != nil {
+			rd = bytes.NewReader(payload)
+		}
+		req, e := http.NewRequestWithContext(ctx, method, u, rd)
+		if e == nil && in != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		return req, e
+	}, 16<<20)
 	if e != nil {
 		return e
 	}
-	if in != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	resp, e := c.httpClient().Do(req)
-	if e != nil {
-		return e
-	}
-	defer resp.Body.Close()
-	raw, e := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
-	if e != nil {
-		return e
-	}
-	if err := checkEnvelope(raw, resp.StatusCode, path); err != nil {
+	if err := checkEnvelope(raw, status, path); err != nil {
 		return err
 	}
 	if out != nil {
@@ -181,20 +345,13 @@ func (c *Client) GetTokenFor(ctx context.Context, corpID, corpSecret string) (To
 		return out, err
 	}
 	u += "?" + q.Encode()
-	req, e := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	status, raw, e := c.do(ctx, "/cgi-bin/gettoken", func() (*http.Request, error) {
+		return http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	}, 1<<20)
 	if e != nil {
 		return out, e
 	}
-	resp, e := c.httpClient().Do(req)
-	if e != nil {
-		return out, e
-	}
-	defer resp.Body.Close()
-	raw, e := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if e != nil {
-		return out, e
-	}
-	if e = checkEnvelope(raw, resp.StatusCode, "/cgi-bin/gettoken"); e != nil {
+	if e = checkEnvelope(raw, status, "/cgi-bin/gettoken"); e != nil {
 		return out, e
 	}
 	if e = json.Unmarshal(raw, &out); e != nil {

@@ -346,7 +346,7 @@ func TestClientTinyEdgePaths(t *testing.T) {
 	if _, err := c.SendTextChunked(context.Background(), "", SendRequest{ToUser: "", OpenKfID: "", MsgType: ""}, "x"); err == nil {
 		t.Fatal("send validation")
 	}
-	if _, err := c.TransServiceState(context.Background(), "", ServiceStateRequest{OpenKfID: "k", ExternalUserID: "u"}); err == nil {
+	if _, err := NewClient("http://127.0.0.1:1", "c", "s").TransServiceState(context.Background(), "", ServiceStateRequest{OpenKfID: "k", ExternalUserID: "u"}); err == nil {
 		t.Fatal("transport")
 	}
 	key := validKeyString()
