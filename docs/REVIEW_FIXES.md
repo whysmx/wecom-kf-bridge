@@ -1,7 +1,7 @@
-# 评审问题修复记录（#1–#23）
+# 评审问题修复记录（#1–#29）
 
 > 按用户要求维护（覆盖 AGENTS.md “不另维护修改记录”的一般规则）。哈希为本地提交。
-> 门禁：`go build ./...`、`go vet ./...`、`go test -race ./...` 通过；严格覆盖率门禁（>95%）通过，总计约 96.4%，见文末“覆盖率”条目。
+> 门禁：`go build ./...`、`go vet ./...`、`go test -race ./...` 通过；严格覆盖率门禁（>95%）通过，总计约 96.5%，见文末“覆盖率”条目。
 
 | # | 问题 | 修复 | 主要文件 | 测试 | 提交 | 遗留 |
 |---|---|---|---|---|---|---|
@@ -28,6 +28,12 @@
 | 21 | MemoryAdapter 永远成功 | 移出生产代码；默认 unavailableAdapter 失败关闭；测试用 fakes_test.go | protocol.go, fakes_test.go | TestUnavailableAdapter… | f179dd2 | — |
 | 22 | 每次新建 http.Client、无限流重试 | 复用 Client；令牌桶限流；仅对无副作用请求或未连接错误重试 | wecom/client.go | wecom/client_retry_test.go | d78a0a4 | — |
 | 23 | 文档完成状态矛盾 | README 新增“当前实现状态”并如实写覆盖率未达标；AGENTS、docs/09 同步 | README.md, AGENTS.md, docs/09 | — | 587372d | 其余专题文档仍描述目标设计 |
+| 24 | 同 ID 的绑定/企业配置更新可改身份字段，存量客户被路由到别的企业/客服账号 | 数据库触发器禁止 UPDATE 身份列（enterprises.tenant_id/corp_id、bindings.enterprise_id/open_kfid、customers.enterprise_id/binding_id/external_user_id）；PutEnterprise/PutBinding 先比对并返回 ErrIdentityChanged；启动时配置改了身份即拒绝启动 | state/store.go, runtime/gateway.go | state/identity_cas_test.go TestIdentityIsImmutable, TestIdentityTriggersInstalledOnUpgrade; runtime/review2_test.go TestConfigIdentityChangeRefusedAtStartup | 4fe0581, bb0be88 | 未提供“显式迁移+客户换代”工具；需改身份请用新 ID |
+| 25 | outbox 不记 BindingRevision，绑定轮换/停用并发时旧请求仍可发出 | CreateOutbox 写入 binding_revision；MarkOutboxSending 条件更新含 active+revision；每块发送前 SendGuarded 在绑定锁（PutBinding 同锁）下再做条件检查，失败则停发、记 REJECTED `precondition_lost:i/n`、释放未发预算、回 70006 | state/store.go, protocol.go | TestMarkOutboxSendingIsConditional, TestSendGuardedSerialisesWithBindingRotation（并发）, protocol_revision_test.go TestSendStopsWhenPreconditionChangesMidMessage | 4fe0581, 3973cae | 绑定锁为进程内锁，配合 #26 单实例 |
+| 26 | 多进程共用同一 SQLite 会重复跑 worker | 数据库旁 `.lock` 独占 OS 文件锁（unix flock / Windows LockFileEx），进程退出自动释放；第二实例 ErrAlreadyRunning 拒绝启动 | runtime/instance_lock*.go, runtime/gateway.go | TestSingleInstanceLock | bb0be88 | Windows 实现仅交叉编译验证 |
+| 27 | MarkOutboxSending 先读后无条件 UPDATE，接管/恢复可在检查后插入 | 改为单条 SQL CAS（state、generation、uid、AI_ELIGIBLE、fence、binding active/revision），按影响行数判定并给出精确原因；TransitionOutbox/MarkOutboxUnknown/TransitionInbox 加 `AND state=<已校验状态>`，冲突返回 ErrConflict | state/store.go | TestMarkSendingRacesTakeover, TestTransitionsAreCompareAndSet（并发）, TestCompareAndSetLostRace | 4fe0581 | — |
+| 28 | 回调 SSRF 白名单只看端口和任意 CIDR，主机名未绑定其 CIDR | 按 host:port 建立每目标策略，拨号时解析主机名，仅连接该目标自身 CIDR 内地址；链路本地/组播/未指定地址一律拒绝；无代理、不跟随重定向 | runtime/workers.go | TestCallbackDialPolicyIsPerTarget（同端口 A 不能到 B 的网段） | bb0be88 | 共用一个 Transport，但策略按目标隔离 |
+| 29 | DeliveryWorker 状态迁移失败仍当成功；部分 HELD 分支忽略错误 | step 失败返回 false、不更新本地状态；所有 HELD 分支返回迁移结果，失败即停止该客户后续消息 | runtime/workers.go | TestDeliveryTransitionFailuresStopAndKeepState（每个分支） | bb0be88 | POSTING 后迁移失败的行由启动恢复处理 |
 
 附带修复：inbox `attempt` 原先每次状态迁移都 +1，导致重试次数被流水线迁移耗尽；改为仅进入 POSTING 时计数（ef0b7b6）。
 
@@ -40,5 +46,7 @@
   - runtime：每个密钥缺失/格式错误都拒绝启动；不可打开的数据库、非法 tenant_key；回调落库失败要求企微重试；worker 关停超时上报；sync/delivery 各错误分支（传输中断→DELIVERY_UNKNOWN、URL 非法→RETRY_WAIT、状态迁移失败停止后续）；拨号地址校验；令牌刷新失败。
   - wecom：限流/退避期间 ctx 取消立即停止；Decrypt 拒绝坏填充、过短、长度越界、非 UTF-8。
 - 文件：protocol_fault_test.go, runtime/errors_test.go, state/fault_test.go, state/migrate_fault_test.go, wecom/edge_errors_test.go
-- 结果：总计约 96.4%；root 96.8%、runtime 97.5%、state 95.1%、wecom 96.3%、cmd 100%。
+- 结果：总计约 96.5%；root 96.8%、runtime 97.5%、state 95.1%、wecom 96.3%、cmd 100%。
 - 遗留：state 余量小；剩余未覆盖多为事务 Commit 失败等难以确定性注入的分支。
+
+- #24–#29 后复测：总计 96.46%；root 96.9%、runtime 97.6%、state 95.3%、wecom 96.3%、cmd 100%。
