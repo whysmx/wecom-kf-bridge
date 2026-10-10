@@ -34,7 +34,7 @@ SQL 参数化且带授权企业/binding 范围；agentid、touser、media_id 不
 YAML 只放进程、网络、存储、安全及资源上限；企业/账号/绑定由数据库和后台管理，避免同字段双来源竞争。
 
 ```yaml
-# 目标格式示意；当前没有配置加载器，不可当运行命令。
+# 目标格式示意（YAML 版本尚未实现）。当前已实现的是 JSON 配置加载器，见仓库根 config.example.json 与 runtime/config.go。
 server:
   public_listen: "127.0.0.1:8090"
   admin_listen: "127.0.0.1:8091"
