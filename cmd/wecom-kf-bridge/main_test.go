@@ -47,8 +47,17 @@ func TestRunContextMissingConfigIsFatal(t *testing.T) {
 }
 
 func TestRunContextStartsAndStops(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	// Stop only once initialisation is done, so a slow CI machine cannot
+	// turn this into an init-timeout test.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	orig := newApp
+	defer func() { newApp = orig }()
+	newApp = func(c bridgeRuntime.AppConfig) (*bridgeRuntime.App, error) {
+		a, err := orig(c)
+		go func() { time.Sleep(200 * time.Millisecond); cancel() }()
+		return a, err
+	}
 	var b strings.Builder
 	if got := runContext(ctx, writeConfig(t, "127.0.0.1:0"), &stringWriter{&b}); got != 0 {
 		t.Fatalf("runContext=%d %s", got, b.String())
