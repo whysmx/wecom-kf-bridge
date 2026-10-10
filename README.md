@@ -1,92 +1,89 @@
 # WeCom KF Bridge
 
-微信客服与未修改的 cc-connect 之间的独立协议转换网关。
+把**企业微信「微信客服」**接到**未修改的 [cc-connect](https://github.com/chenhg5/cc-connect)**（现有 WeChat Work HTTP 配置）的独立网关。
 
-> 当前实现基线 · 2026-10-09。各专题文档共同组成一套现行设计，不另维护修改记录或并行旧方案。代码已实现可运行的网关主链路（见下文“当前实现状态”）；文档描述目标设计，未实现部分在该节明确列出。
+网关只做协议与身份转换：不调用大模型、不运行 Codex、不保管模型凭证或项目目录。适合单企业、自建、希望沿用现有 cc-connect / Agent 工具链的场景。
 
-## 定位与可行性
+> 当前版本见 [Releases](https://github.com/whysmx/wecom-kf-bridge/releases) 与 [CHANGELOG.md](CHANGELOG.md)。**尚未完成真实企业微信全链路联调，非生产就绪。**
+
+## 它做什么
 
 ```text
-个人微信客户（多个客户可同时对话）
-    ↕ 微信客服回调 / 客服 API
-WeCom KF Bridge（一个网关进程，并发处理不同客户）
-    ↕ 自建应用兼容 HTTP API / 加密 XML 回调
-cc-connect（不改源码，现有 WeChat Work 配置）
-    ↕
-Codex 与只读项目资料
+个人微信客户（可多人同时对话）
+        ↕  微信客服
+WeCom KF Bridge（单进程 · SQLite · 可选管理后台）
+        ↕  兼容自建应用 API + 加密 XML 回调
+cc-connect（api_base_url 指向网关，源码不改）
+        ↕
+Codex / 现有 Agent
 ```
 
-**单进程指网关只部署一份运行中的程序，不是只允许一位客户，也不是所有客户排队轮流等 AI 回答。** 网关在同一进程内并发处理不同客户；客户 A 等待回答时，仍可接收和处理客户 B、C 的请求。cc-connect、Codex 是独立运行的执行端，不受“网关单进程”数量约束。实际同时生成能力还受执行端配置、服务器资源及平台额度限制，必须联调验证。
+- 对微信：收回调、同步消息、按窗口发送客服消息、同步真实客服账号。
+- 对 cc-connect：提供虚拟 `corp_id` / `secret`、`gettoken` / `user/get` / `message/send`，并主动回调客户端。
+- **网关必须能访问 cc-connect 的回调地址**；高级配置里的 `api_base_url` 不是反向隧道。
 
-主路线有固定源码支持，可按小项目实施；不等于已经完成真实微信联调。上游 `chenhg5/cc-connect@dfad19415a38b00b2c5c288610784d1a7eef337f` 已有 `api_base_url`，不必新增平台插件或修改客户端。微信接口以 WxJava 固定源码交叉核对；证据和剩余核验项见[技术评审](docs/15-feasibility-review.md)与[依据登记](docs/14-sources-and-verification.md)。
+面向谁：已有或准备使用 cc-connect + 微信客服、需要本地/内网网关做桥接的个人或小团队。不面向多租户 SaaS、坐席工作台或改客户端源码的方案。
 
-在 cc-connect 选择 WeChat Work 的 HTTP 自建应用配置，通过高级 `api_base_url` 指向网关并填入虚拟凭证。**网关还必须能访问 cc-connect 的回调地址**；API 基础地址不是反向隧道。不要改成智能机器人 WebSocket、个人微信扫码或 OneBot。
+## 架构与概念
 
-网关不调用模型、不运行 Codex、不管理项目目录或大模型凭证。现有模型及中转站配置保持在执行端。
+更完整的说明见 [docs/architecture.md](docs/architecture.md)。摘要：
 
-## 小项目实现范围
-
-推荐单企业、单实例、单网关进程、SQLite、同进程中文页面。通过进程内并发任务处理多个客户，不引入 Redis、独立消息队列、微服务、租户运营平台或另一个客服工作台；不把逻辑模块强制拆成服务或大量数据库表。
-
-保留真实客服账号同步、创建、编辑、删除、客服链接、项目绑定、启停和凭证管理；保留客户昵称、文本及既定媒体目标、人工接管、持久化去重、故障恢复和必要审计。账号、客户和绑定数量不写死，资源限额及平台配额仍须控制。
-
-不同客户使用独立会话身份；同一客户只在需要保持顺序或更新状态时局部串行，不用全局锁包住整轮 AI 对话。worker 数限制的是网关某类后台任务的并发量，不是客户数或整个系统的 AI 会话数。容量达到上限时采用有界排队和明确限流，不承诺无限并发。
-
-R-001～R-024 及整体/每业务模块严格 >95% 的覆盖率要求保留。具体实现基线见[架构决策](docs/adr/0001-design-baseline.md)。
-
-## 需要接受的边界
-
-HTTP 回调 200 不代表 AI 已处理；客户端会过滤早于本次进程启动时间减 2 秒的消息，重启后不保证补答历史问题。未知投递/发送默认不盲重试，不承诺端到端 exactly-once。
-
-长回答会拆成多次发送，必须考虑客服窗口与条数限制。人工接管抑制后续发送，但不能撤回已在途消息或停止正在运行的 Codex；恢复采用新代际 UID，会新建客户端上下文。
-
-只读 Codex 不等于禁止 cc-connect 的管理命令，也不等于客户间文件权限隔离。昵称缓存、媒体 MIME 和下载错误的客户端限制同样需要验证，不能宣称“完全继承且没有差异”。
-
-## 文档导航
-
-| 文档 | 用途 |
+| 概念 | 一句话 |
 |---|---|
-| [AGENTS](AGENTS.md) / [文档地图](docs/00-document-map.md) | 实现约束、阅读顺序与现行设计 |
-| [需求规格](docs/01-requirements.md) | R-001～R-024，包括多客户并发对话 |
-| [总体架构](docs/02-architecture.md) | 单进程并发、网络方向与职责 |
-| [cc-connect 契约](docs/03-cc-connect-contract.md) | 虚拟接口、XML、分块及客户端限制 |
-| [微信客服契约](docs/04-wechat-kf-contract.md) | SDK 交叉证据、接口、权限与待实测项 |
-| [客服账号管理](docs/05-account-management.md) | 真实 CRUD、链接和绑定 |
-| [身份与昵称](docs/06-customer-identity.md) | 稳定身份、缓存和代际 |
-| [可靠性与人工接管](docs/07-delivery-and-handover.md) | 游标、重试、UNKNOWN 和人工栅栏 |
-| [中文管理](docs/08-admin-ui-and-api.md) | 简单页面及内部操作合同 |
-| [数据配置安全](docs/09-data-config-security.md) | 最小持久化、访问控制与恢复 |
-| [测试门禁](docs/10-testing-and-coverage.md) | >95% 统计口径与实际证据要求 |
-| [实施计划](docs/11-implementation-plan.md) | 文本并发及安全、管理、媒体和发布 |
-| [验收矩阵](docs/13-acceptance-matrix.md) / [兼容边界验收](docs/15-feasibility-review.md) | AT-001～AT-070，当前均待执行 |
-| [部署运维](docs/12-deployment-runbook.md) | 网络、问答配置、Windows 与故障处理 |
-| [依据登记](docs/14-sources-and-verification.md) / [技术评审](docs/15-feasibility-review.md) | 固定来源、结论及未完成项 |
-| [单企业管理后台](docs/17-single-enterprise-admin-design.md) | 单企业后台页面、路由、鉴权与分期 |
-| [架构决策](docs/adr/0001-design-baseline.md) | 唯一现行实现基线与取舍 |
-| [Agent 实现手册](docs/16-agent-implementation-playbook.md) | 防止实现偏移、日志和测试门禁 |
-| [任务模板](docs/templates/task-brief.md) / [测试报告](docs/templates/test-report.md) | 可按实际任务简短填写，不编造结果 |
+| 企业 | 一个真实企业微信；首版单企业 |
+| 客服账号 | 微信侧 `open_kfid`，经官方接口管理 |
+| 绑定 | 一个客服账号 ↔ 一个 cc-connect 平台实例（虚拟凭证 + 回调 URL） |
+| 客户 / 代际 | 稳定客户身份；接管恢复或改绑会换代际，旧 UID 失效 |
+| Inbox / Outbox | 入站同步与出站发送的持久化记录 |
+| 管理后台 | 可选独立端口，账号/绑定/客户/诊断/审计 |
 
-## 当前交付状态
+单进程表示只跑一份网关，**不是**只服务一位客户：进程内按客户并发处理；同一会话与同一同步游标才局部串行。
 
-当前实现状态（2026-10-10，以代码和测试为准）：
+## 配置
 
-- 已接通：`cmd/wecom-kf-bridge` 读取 JSON 配置（`WECOM_KF_BRIDGE_CONFIG`，示例 `config.example.json`，密钥只从环境变量读取），打开 SQLite，挂载 cc-connect 兼容 API（`/cgi-bin/gettoken`、`/cgi-bin/user/get`、`/cgi-bin/message/send`）、按租户路由的微信客服回调 `/webhooks/wechat-kf/{tenant_key}`、健康检查，并启动 sync/delivery worker；启动时回收中断的投递和发送。配置缺失或无效时进程直接退出，不会只起健康检查。
-- 已实现：先写 outbox 再发送、代际/接管栅栏、官方接待状态、48h/5 条窗口与预算、70006/70007/70008 区分、分块逐块记录；客户正文与拉取 token 落库加密；CompatMsgId 持久序列；origin 过滤；常量时间比较；令牌数量上限；企业/绑定/客户身份字段不可变（数据库触发器）；发送全程按代际、接管栅栏、绑定 active/revision 做条件更新与逐块复核；单实例文件锁；回调按目标主机名绑定其 CIDR。
-- 管理后台（docs/17）：独立监听（默认 `127.0.0.1:8091`，配置 `admin`，未配置则不启动），仅单企业；bcrypt 密码哈希从环境变量读取（如 `htpasswd -bnBC 12 "" '<密码>' | tr -d ':\n'`）；服务端会话（HttpOnly/Secure/SameSite=Strict/Path=/admin，重启失效、数量上限）、CSRF + Origin/Referer 校验、危险操作二次认证、Idempotency-Key + revision 409、审计。已实现概览、客服账号（同步/新建/改名/备注/官方链接/一次性票据删除，响应丢失记 UNKNOWN）、转发绑定（新建/启停/改绑并全部客户换代/凭证轮换/一次性导出/回调挑战验证）、客户转人工与恢复（新代际）、消息诊断（默认不显示正文，查看正文需二次认证并审计，只能标记不能重发）、系统设置（只读+连接测试）、操作审计。差异与未做项见 docs/REVIEW_FIXES.md“管理后台”。
-- 第三轮评审 #30-#38（v0.1.4）：换代与发送互斥、BlockOutbox CAS、删除客服账号即停用绑定/吊销令牌/冻结 UID、转人工/恢复经官方 service_state 接口并回读确认（不确定则 UNKNOWN）、Cookie Secure 默认开启（仅回环可用 `admin.insecure_cookie` 明文）、WeCom API 强制 https（`wecom.allow_insecure_http` 仅供测试且告警）、callback_targets 严格校验、`Build` 自带校验、SQLite 每连接初始化。详见 docs/REVIEW_FIXES.md。
-- 未实现/未验证：管理后台未经真实企业联调（账号增删改、链接、接管/恢复）、系统设置在线保存、头像上传、Windows 服务、真实企业微信全链路联调、对账任务（DELIVERY_UNKNOWN/UNKNOWN 只停在待核查）、`service_state_map` 需在测试企业中按官方取值配置。
-- 质量门禁：本地 `go build ./...`、`go vet ./...`、`go test -race ./...` 通过；严格覆盖率门禁（>95%，`-coverpkg=./...`）本地通过：总计约 96.0%，各包 root 97.3% / admin 95.8% / runtime 95.7% / state 95.6% / wecom 96.3% / cmd 100%（admin/state/runtime 余量较小）。不得据此宣称已完成生产联调。
+1. 复制 [config.example.json](config.example.json)，按环境修改。
+2. 用环境变量 `WECOM_KF_BRIDGE_CONFIG` 指向该文件。
+3. 准备主密钥、企业 Secret、回调 Token/AES；若用配置文件声明绑定，首次还需虚拟凭证环境变量。启用管理后台时再准备管理员密码哈希。
 
+字段说明、首次启动与后台相关约束见 [docs/configuration.md](docs/configuration.md)。密钥不要写进 JSON。
 
-- 第四轮评审 #39-#45（v0.1.5）：诊断按企业隔离、凭证轮换事务化并可回滚、凭证入库后重启不再需要旧 env、api_base_url 严格校验与 URL 脱敏、官方列表缺失的客服账号标 UNKNOWN 并停止发送、发布 SHA256SUMS 汇总、导出完整 cc-connect 配置（新增可选 `server.public_base_url`）。
+## 运行与部署（概要）
 
-### 已知不足 / 暂缓项
+```bash
+export WECOM_KF_BRIDGE_CONFIG=./config.json
+export WECOM_KF_BRIDGE_MASTER_KEY=…   # 32 字节，见配置文档
+# 企业与（首次）绑定相关环境变量…
+./wecom-kf-bridge
+```
 
-尚未真实联调、非生产就绪。其余暂缓项（指定接待人员、UNKNOWN 客户恢复流程、删除账号部分失败不回滚、轮换失败的 revision 栅栏、callback_url 未脱敏、导出 allow_from 为 `*`、凭证入库后配置字段不再生效等）见 docs/REVIEW_FIXES.md“暂缓项（Deferred）”。
+也可从 [Releases](https://github.com/whysmx/wecom-kf-bridge/releases) 下载对应平台压缩包（附 `SHA256SUMS`）。
 
-## 发布流程
+建议：
 
-1. 在 `CHANGELOG.md` 新增 `## vX.Y.Z - YYYY-MM-DD` 小节（中文，Keep a Changelog 分类），并更新 `VERSION`。
-2. 本地 `scripts/release_notes.sh vX.Y.Z` 确认能提取说明；提交并推送 main，等待 CI 通过。
-3. 在该提交上创建附注标签并推送：`git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z`。
-4. `release` 工作流自动构建六个平台包，并以 CHANGELOG 对应小节作为说明发布 GitHub Release；缺少小节时发布失败。不要再手动 `gh release create`，以免重复。
+- 公开 listener（默认 `127.0.0.1:8090`）仅暴露给微信回调与 cc-connect；生产前应置于 HTTPS/反代之后。
+- 管理后台（默认 `127.0.0.1:8091`）仅本机或受控网络；公网不要用明文 HTTP。
+- 单实例对应一个 SQLite 文件；不要多进程抢同一数据库。
+- 在 cc-connect 中选 WeChat Work HTTP 自建应用，填入网关导出的虚拟凭证，并将 `api_base_url` 设为网关根地址（可配置 `server.public_base_url` 便于导出）。
+
+## 文档
+
+| 文档 | 内容 |
+|---|---|
+| [架构概览](docs/architecture.md) | 数据流、概念、收发与边界 |
+| [配置参考](docs/configuration.md) | 必填项、环境变量、后台与绑定 |
+| [config.example.json](config.example.json) | 可运行示例骨架 |
+| [CHANGELOG.md](CHANGELOG.md) | 版本说明（亦用于 GitHub Release） |
+| [维护说明](AGENTS.md) | 给维护者的简短约定 |
+
+历史需求/契约/实施手册与评审修复明细在 [docs/archive/](docs/archive/)，一般介绍项目无需阅读。
+
+## 已知限制（摘要）
+
+- 未完成真实企业微信联调；UNKNOWN 结果默认不盲重试。
+- 人工接管不能撤回已在途消息，也不能停止已在运行的 Codex；恢复会换代际 UID。
+- 长回复会分块发送，受客服会话窗口与条数限制。
+- 更多暂缓项见 [docs/archive/REVIEW_FIXES.md](docs/archive/REVIEW_FIXES.md) 文末「暂缓项」。
+
+## 发布
+
+版本号见 `VERSION`。打附注标签 `vX.Y.Z` 并推送后，GitHub Actions 会构建多平台包，并以 `CHANGELOG.md` 中对应小节作为 Release 说明。细节仍以 CHANGELOG 与仓库 Actions 为准。
