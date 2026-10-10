@@ -161,21 +161,28 @@ type OutboxMessage struct {
 type Store struct {
 	db    *sql.DB
 	now   func() time.Time
-	uid   func() (string, error)
-	locks keyedLocks
+	uid    func() (string, error)
+	locks  keyedLocks
+	sealer *Sealer
 }
 
 type Options struct {
 	Now          func() time.Time
 	UIDGenerator func() (string, error)
+	// MasterKey (32 bytes) encrypts customer message bodies and pull tokens
+	// at rest. Without it, writing such content fails with ErrNoSealer.
+	MasterKey []byte
 }
 
-func Open(path string) (*Store, error) {
+func Open(path string) (*Store, error) { return OpenWithOptions(path, Options{}) }
+
+// OpenWithOptions opens a SQLite file with the supplied options.
+func OpenWithOptions(path string, opts Options) (*Store, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, err
 	}
-	s, err := New(db, Options{})
+	s, err := New(db, opts)
 	if err != nil {
 		_ = db.Close()
 		return nil, err
@@ -195,6 +202,13 @@ func New(db *sql.DB, opts Options) (*Store, error) {
 	}
 	if s.uid == nil {
 		s.uid = randomAlias
+	}
+	if opts.MasterKey != nil {
+		sl, err := NewSealer(opts.MasterKey)
+		if err != nil {
+			return nil, err
+		}
+		s.sealer = sl
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -677,7 +691,11 @@ func (s *Store) CommitSyncPage(ctx context.Context, scopeID, nextCursor string, 
 		if in.UpdatedAt.IsZero() {
 			in.UpdatedAt = now
 		}
-		res, e := tx.ExecContext(ctx, `INSERT INTO inbox(scope_id,binding_id,customer_id,generation,external_msg_id,compat_msg_id,create_time,source,type,payload_ref,state,error_category,attempt,received_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(scope_id,external_msg_id) DO NOTHING`, scopeID, in.BindingID, in.CustomerID, in.Generation, in.ExternalMsgID, in.CompatMsgID, unix(in.CreateTime), in.Source, in.Type, in.PayloadRef, in.State, in.ErrorCategory, in.Attempt, unix(in.ReceivedAt), unix(in.UpdatedAt))
+		payload, e := s.sealField(in.PayloadRef, "inbox.payload")
+		if e != nil {
+			return 0, e
+		}
+		res, e := tx.ExecContext(ctx, `INSERT INTO inbox(scope_id,binding_id,customer_id,generation,external_msg_id,compat_msg_id,create_time,source,type,payload_ref,state,error_category,attempt,received_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(scope_id,external_msg_id) DO NOTHING`, scopeID, in.BindingID, in.CustomerID, in.Generation, in.ExternalMsgID, in.CompatMsgID, unix(in.CreateTime), in.Source, in.Type, payload, in.State, in.ErrorCategory, in.Attempt, unix(in.ReceivedAt), unix(in.UpdatedAt))
 		if e != nil {
 			return 0, e
 		}
@@ -715,17 +733,19 @@ func inboxSelect() string {
 	return `SELECT id,scope_id,binding_id,customer_id,generation,external_msg_id,compat_msg_id,create_time,source,type,payload_ref,state,error_category,attempt,received_at,updated_at FROM inbox`
 }
 func (s *Store) Inbox(ctx context.Context, id int64) (InboxMessage, error) {
-	m, err := scanInbox(s.db.QueryRowContext(ctx, inboxSelect()+` WHERE id=?`, id))
-	if errors.Is(err, sql.ErrNoRows) {
-		err = ErrNotFound
-	}
-	return m, err
+	return s.openInbox(scanInbox(s.db.QueryRowContext(ctx, inboxSelect()+` WHERE id=?`, id)))
 }
 func (s *Store) InboxByExternalID(ctx context.Context, scopeID, id string) (InboxMessage, error) {
-	m, err := scanInbox(s.db.QueryRowContext(ctx, inboxSelect()+` WHERE scope_id=? AND external_msg_id=?`, scopeID, id))
+	return s.openInbox(scanInbox(s.db.QueryRowContext(ctx, inboxSelect()+` WHERE scope_id=? AND external_msg_id=?`, scopeID, id)))
+}
+func (s *Store) openInbox(m InboxMessage, err error) (InboxMessage, error) {
 	if errors.Is(err, sql.ErrNoRows) {
-		err = ErrNotFound
+		return m, ErrNotFound
 	}
+	if err != nil {
+		return m, err
+	}
+	m.PayloadRef, err = s.openField(m.PayloadRef, "inbox.payload")
 	return m, err
 }
 func (s *Store) TransitionInbox(ctx context.Context, id int64, to string, errCategory string) (InboxMessage, error) {
@@ -808,8 +828,12 @@ func (s *Store) CreateOutbox(ctx context.Context, o OutboxMessage) (OutboxMessag
 	if o.BudgetUnits <= 0 {
 		o.BudgetUnits = 1
 	}
+	sealedBody, err := s.sealField(o.Body, "outbox.body")
+	if err != nil {
+		return OutboxMessage{}, err
+	}
 	now := s.now()
-	_, err = tx.ExecContext(ctx, `INSERT INTO outbox(id,binding_id,customer_id,generation,uid,body,content_ref,state,budget_units,budget_reserved,attempt,error_category,external_msg_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,1,?,?,?,?,?)`, o.ID, c.BindingID, c.ID, c.Generation, c.UID, o.Body, o.ContentRef, o.State, o.BudgetUnits, o.Attempt, o.ErrorCategory, o.ExternalMsgID, unix(now), unix(now))
+	_, err = tx.ExecContext(ctx, `INSERT INTO outbox(id,binding_id,customer_id,generation,uid,body,content_ref,state,budget_units,budget_reserved,attempt,error_category,external_msg_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,1,?,?,?,?,?)`, o.ID, c.BindingID, c.ID, c.Generation, c.UID, sealedBody, o.ContentRef, o.State, o.BudgetUnits, o.Attempt, o.ErrorCategory, o.ExternalMsgID, unix(now), unix(now))
 	if err != nil {
 		return OutboxMessage{}, err
 	}
@@ -839,10 +863,16 @@ func outboxSelect() string {
 	return `SELECT id,binding_id,customer_id,generation,uid,body,content_ref,state,budget_units,budget_reserved,attempt,error_category,external_msg_id,in_flight_at,created_at,updated_at FROM outbox`
 }
 func (s *Store) Outbox(ctx context.Context, id string) (OutboxMessage, error) {
-	o, err := scanOutbox(s.db.QueryRowContext(ctx, outboxSelect()+` WHERE id=?`, id))
+	return s.openOutbox(scanOutbox(s.db.QueryRowContext(ctx, outboxSelect()+` WHERE id=?`, id)))
+}
+func (s *Store) openOutbox(o OutboxMessage, err error) (OutboxMessage, error) {
 	if errors.Is(err, sql.ErrNoRows) {
-		err = ErrNotFound
+		return o, ErrNotFound
 	}
+	if err != nil {
+		return o, err
+	}
+	o.Body, err = s.openField(o.Body, "outbox.body")
 	return o, err
 }
 func (s *Store) MarkOutboxSending(ctx context.Context, id string) (OutboxMessage, error) {
@@ -940,7 +970,7 @@ func (s *Store) PendingOutbox(ctx context.Context, bindingID string) ([]OutboxMe
 	defer rows.Close()
 	var out []OutboxMessage
 	for rows.Next() {
-		o, e := scanOutbox(rows)
+		o, e := s.openOutbox(scanOutbox(rows))
 		if e != nil {
 			return nil, e
 		}

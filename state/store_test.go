@@ -18,7 +18,7 @@ func testStore(t *testing.T) *Store {
 	db.SetMaxOpenConns(1)
 	now := time.Unix(1700000000, 123)
 	uids := []string{"alias", "next"}
-	s, err := New(db, Options{Now: func() time.Time { return now }, UIDGenerator: func() (string, error) {
+	s, err := New(db, Options{MasterKey: testMasterKey, Now: func() time.Time { return now }, UIDGenerator: func() (string, error) {
 		if len(uids) == 0 {
 			return "last", nil
 		}
