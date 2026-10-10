@@ -49,3 +49,15 @@ func TestRestartWithoutLegacyBindingEnv(t *testing.T) {
 		t.Fatal("fresh DB error unclear:", err)
 	}
 }
+
+// #42: api_base_url must not carry userinfo/query/fragment; logs and the
+// settings page show it redacted.
+func TestAPIBaseURLStrict(t *testing.T) {
+	for _, u := range []string{"https://u:p@qyapi.weixin.qq.com", "https://qyapi.weixin.qq.com?x=1", "https://qyapi.weixin.qq.com/#f", "https://qyapi.weixin.qq.com?"} {
+		c := gatewayConfig(t)
+		c.WeCom.APIBaseURL = u
+		if c.Validate() == nil {
+			t.Errorf("%s accepted", u)
+		}
+	}
+}

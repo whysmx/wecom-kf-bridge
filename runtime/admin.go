@@ -291,7 +291,7 @@ func (g *Gateway) buildAdmin(cfg Config) (http.Handler, error) {
 		{Group: "企业", Name: "Secret 环境变量", Value: e.SecretEnv},
 		{Group: "企业", Name: "回调 Token 环境变量", Value: e.CallbackTokenEnv},
 		{Group: "企业", Name: "回调 AES 环境变量", Value: e.CallbackAESKeyEnv},
-		{Group: "微信客服", Name: "API 地址", Value: cfg.WeCom.APIBaseURL},
+		{Group: "微信客服", Name: "API 地址", Value: wecom.RedactURL(cfg.WeCom.APIBaseURL)},
 		{Group: "微信客服", Name: "customer origins", Value: fmt.Sprint(cfg.WeCom.CustomerOrigins)},
 		{Group: "微信客服", Name: "service_state_map", Value: fmt.Sprint(cfg.WeCom.ServiceStateMap)},
 		{Group: "发送", Name: "窗口（小时）", Value: fmt.Sprint(cfg.SendPolicy.WindowHours)},

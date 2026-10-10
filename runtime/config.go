@@ -200,6 +200,8 @@ func (c Config) Validate() error {
 	}
 	if u, err := url.Parse(c.WeCom.APIBaseURL); err != nil || u.Host == "" || !(u.Scheme == "https" || (u.Scheme == "http" && c.WeCom.AllowInsecureHTTP)) {
 		errs = append(errs, "wecom.api_base_url must be an https URL (http only with wecom.allow_insecure_http)")
+	} else if u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(c.WeCom.APIBaseURL, "#") {
+		errs = append(errs, "wecom.api_base_url must not contain userinfo, query or fragment")
 	}
 	for i, t := range c.Security.CallbackTargets {
 		if strings.TrimSpace(t.Host) == "" || t.Port < 1 || t.Port > 65535 || len(t.AllowedCIDRs) == 0 {

@@ -57,7 +57,7 @@ func Build(ctx context.Context, cfg Config, logger Logger) (*Gateway, error) {
 		return nil, err
 	}
 	if cfg.WeCom.AllowInsecureHTTP && strings.HasPrefix(cfg.WeCom.APIBaseURL, "http://") {
-		logger.Log("SECURITY_WARNING_insecure_wecom_api", map[string]any{"api_base_url": cfg.WeCom.APIBaseURL, "warning": "corp secret and access_token are sent in cleartext; use only with local fakes"})
+		logger.Log("SECURITY_WARNING_insecure_wecom_api", map[string]any{"api_base_url": wecom.RedactURL(cfg.WeCom.APIBaseURL), "warning": "corp secret and access_token are sent in cleartext; use only with local fakes"})
 	}
 	mk, err := secretEnv(cfg.Security.MasterKeyEnv)
 	if err != nil {

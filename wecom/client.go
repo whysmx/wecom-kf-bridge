@@ -149,6 +149,12 @@ func (c *Client) do(ctx context.Context, path string, mk func() (*http.Request, 
 			return 0, nil, err
 		}
 		resp, err := hc.Do(req)
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			// transport errors embed the request URL, including the
+			// access_token query; never let it reach logs or pages (#42).
+			ue.URL = RedactURL(ue.URL)
+		}
 		retry := false
 		var status int
 		var raw []byte
@@ -530,4 +536,14 @@ func (c *Client) SendTextChunked(ctx context.Context, accessToken string, req Se
 // text. It uses the contractual 2,000 UTF-8 byte chunk size.
 func (c *Client) SendText(ctx context.Context, accessToken, toUser, openKfID, text string) ([]SendResponse, error) {
 	return c.SendTextChunked(ctx, accessToken, SendRequest{ToUser: toUser, OpenKfID: openKfID, MsgType: "text"}, text)
+}
+
+// RedactURL drops userinfo, query and fragment: scheme://host/path only.
+func RedactURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "[invalid url]"
+	}
+	u.User, u.RawQuery, u.Fragment, u.RawFragment, u.ForceQuery = nil, "", "", "", false
+	return u.String()
 }
