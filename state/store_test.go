@@ -123,6 +123,7 @@ func TestSyncInboxOutboxAndAudit(t *testing.T) {
 	if _, err := s.TransitionInbox(ctx, in.ID, InboxReceived, ""); !errors.Is(err, ErrInvalidState) {
 		t.Fatal(err)
 	}
+	openWindow(t, s, c.ID)
 	o, err := s.CreateOutbox(ctx, OutboxMessage{CustomerID: c.ID, Generation: c.Generation, UID: c.UID, Body: "answer", BudgetUnits: 1})
 	if err != nil {
 		t.Fatal(err)

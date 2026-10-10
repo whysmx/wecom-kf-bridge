@@ -28,6 +28,10 @@ var (
 	ErrInvalidState    = errors.New("state: invalid transition")
 	ErrUnknownResult   = errors.New("state: delivery result is unknown")
 	ErrInvalidID       = errors.New("state: invalid identifier")
+	ErrUnauthorized    = errors.New("state: customer not authorized")
+	ErrBindingInactive = errors.New("state: binding inactive or revision changed")
+	ErrWindowClosed    = errors.New("state: send window closed")
+	ErrBudgetExceeded  = errors.New("state: send budget exhausted")
 )
 
 // Delivery and handover states are strings in SQLite intentionally.  This
@@ -162,6 +166,30 @@ type OutboxMessage struct {
 	InFlightAt     time.Time
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+	// ChunksTotal/ChunksSent record partial progress of a chunked send.
+	ChunksTotal int
+	ChunksSent  int
+	// BindingRevision, when >0, must equal the binding's current revision.
+	BindingRevision int64
+}
+
+// SendPolicy is the conservative local send window: after a customer
+// message, at most MaxSends units within Window (docs/04 §5, SDK-noted and
+// pending real-enterprise verification). Zero values use those defaults;
+// there is no "unlimited" setting.
+type SendPolicy struct {
+	Window   time.Duration
+	MaxSends int
+}
+
+func (p SendPolicy) normalized() SendPolicy {
+	if p.Window <= 0 {
+		p.Window = 48 * time.Hour
+	}
+	if p.MaxSends <= 0 {
+		p.MaxSends = 5
+	}
+	return p
 }
 
 // Store owns one SQLite handle. database/sql itself supplies a pool, while
@@ -173,6 +201,7 @@ type Store struct {
 	uid    func() (string, error)
 	locks  keyedLocks
 	sealer *Sealer
+	policy SendPolicy
 }
 
 type Options struct {
@@ -181,6 +210,7 @@ type Options struct {
 	// MasterKey (32 bytes) encrypts customer message bodies and pull tokens
 	// at rest. Without it, writing such content fails with ErrNoSealer.
 	MasterKey []byte
+	Policy    SendPolicy
 }
 
 func Open(path string) (*Store, error) { return OpenWithOptions(path, Options{}) }
@@ -205,7 +235,7 @@ func New(db *sql.DB, opts Options) (*Store, error) {
 	if db == nil {
 		return nil, errors.New("state: nil database")
 	}
-	s := &Store{db: db, now: opts.Now, uid: opts.UIDGenerator}
+	s := &Store{db: db, now: opts.Now, uid: opts.UIDGenerator, policy: opts.Policy.normalized()}
 	if s.now == nil {
 		s.now = time.Now
 	}
@@ -286,6 +316,10 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		// compat_seq hands out the cc-connect MsgId: a persisted, strictly
 		// increasing positive int64 per binding (docs/03 §6, docs/09 §2).
 		`CREATE TABLE IF NOT EXISTS compat_seq (binding_id TEXT PRIMARY KEY, next INTEGER NOT NULL CHECK(next > 0))`,
+		// customer_uids remembers every UID ever issued so an old generation
+		// is recognised (stale) and can never be reassigned.
+		`CREATE TABLE IF NOT EXISTS customer_uids (binding_id TEXT NOT NULL, uid TEXT NOT NULL, customer_id TEXT NOT NULL REFERENCES customers(id), generation INTEGER NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(binding_id,uid))`,
+		`CREATE TABLE IF NOT EXISTS outbox_chunks (outbox_id TEXT NOT NULL REFERENCES outbox(id), chunk INTEGER NOT NULL, external_msg_id TEXT NOT NULL DEFAULT '', sent_at INTEGER NOT NULL, PRIMARY KEY(outbox_id,chunk))`,
 		`CREATE INDEX IF NOT EXISTS idx_customers_uid ON customers(binding_id,uid)`,
 		`CREATE INDEX IF NOT EXISTS idx_inbox_state ON inbox(binding_id,state)`,
 		`CREATE INDEX IF NOT EXISTS idx_outbox_state ON outbox(binding_id,state)`,
@@ -548,8 +582,18 @@ func (s *Store) EnsureCustomer(ctx context.Context, enterpriseID, bindingID, ext
 		return c, fmt.Errorf("state: uid generator returned invalid uid")
 	}
 	now := s.now()
-	_, err = s.db.ExecContext(ctx, `INSERT INTO customers(id,enterprise_id,binding_id,external_user_id,generation,uid,state,created_at,updated_at) VALUES(?,?,?,?,1,?,'AI_ELIGIBLE',?,?)`, id, enterpriseID, bindingID, external, uid, unix(now), unix(now))
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
+		return c, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `INSERT INTO customers(id,enterprise_id,binding_id,external_user_id,generation,uid,state,created_at,updated_at) VALUES(?,?,?,?,1,?,'AI_ELIGIBLE',?,?)`, id, enterpriseID, bindingID, external, uid, unix(now), unix(now)); err != nil {
+		return c, err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO customer_uids(binding_id,uid,customer_id,generation,created_at) VALUES(?,?,?,1,?)`, bindingID, uid, id, unix(now)); err != nil {
+		return c, err
+	}
+	if err = tx.Commit(); err != nil {
 		return c, err
 	}
 	return s.Customer(ctx, id)
@@ -576,12 +620,36 @@ func (s *Store) Customer(ctx context.Context, id string) (Customer, error) {
 	}
 	return c, err
 }
+
+// CustomerByUID resolves a compatible UID within one binding. A UID from an
+// earlier generation returns ErrStaleGeneration (never the new customer row's
+// send rights); an unknown UID returns ErrNotFound.
 func (s *Store) CustomerByUID(ctx context.Context, bindingID, uid string) (Customer, error) {
 	c, err := scanCustomer(s.db.QueryRowContext(ctx, `SELECT `+customerCols+` FROM customers WHERE binding_id=? AND uid=?`, bindingID, uid))
 	if errors.Is(err, sql.ErrNoRows) {
-		err = ErrNotFound
+		var n int
+		if e := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM customer_uids WHERE binding_id=? AND uid=?`, bindingID, uid).Scan(&n); e != nil {
+			return c, e
+		}
+		if n > 0 {
+			return c, ErrStaleGeneration
+		}
+		return c, ErrNotFound
 	}
 	return c, err
+}
+
+// SetCustomerAuthorized toggles gateway entry authorization for a customer.
+func (s *Store) SetCustomerAuthorized(ctx context.Context, id string, ok bool) error {
+	v := 0
+	if ok {
+		v = 1
+	}
+	r, err := s.db.ExecContext(ctx, `UPDATE customers SET authorized=?,revision=revision+1,updated_at=? WHERE id=?`, v, unix(s.now()), id)
+	if err != nil {
+		return err
+	}
+	return rowsOrNotFound(r)
 }
 func (s *Store) SetNickname(ctx context.Context, id, nickname string, at time.Time) error {
 	if at.IsZero() {
@@ -702,6 +770,9 @@ func (s *Store) RecoverCustomer(ctx context.Context, customerID, reason string) 
 	now := s.now()
 	newGen := c.Generation + 1
 	if _, err = tx.ExecContext(ctx, `UPDATE customers SET generation=?,uid=?,state=?,fence_generation=?,revision=revision+1,updated_at=? WHERE id=?`, newGen, uid, CustomerAIEligible, newGen, unix(now), customerID); err != nil {
+		return Customer{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO customer_uids(binding_id,uid,customer_id,generation,created_at) VALUES(?,?,?,?,?)`, c.BindingID, uid, customerID, newGen, unix(now)); err != nil {
 		return Customer{}, err
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO handover_events(customer_id,old_generation,state,reason,created_at) VALUES(?,?,?,?,?)`, customerID, c.Generation, CustomerAIEligible, reason, unix(now)); err != nil {
@@ -926,8 +997,34 @@ func (s *Store) CreateOutbox(ctx context.Context, o OutboxMessage) (OutboxMessag
 	if c.Generation != o.Generation || c.UID != o.UID {
 		return OutboxMessage{}, ErrStaleGeneration
 	}
-	if c.State != CustomerAIEligible {
+	// Takeover fence: a fence at the current generation with a non-AI state
+	// means a handover began; nothing may be sent for this generation.
+	if c.State != CustomerAIEligible || c.FenceGeneration > c.Generation {
 		return OutboxMessage{}, ErrHeld
+	}
+	if !c.Authorized {
+		return OutboxMessage{}, ErrUnauthorized
+	}
+	var active int
+	var rev int64
+	if err = tx.QueryRowContext(ctx, `SELECT active,revision FROM bindings WHERE id=?`, c.BindingID).Scan(&active, &rev); err != nil {
+		return OutboxMessage{}, mapNotFound(err)
+	}
+	if active == 0 || (o.BindingRevision > 0 && o.BindingRevision != rev) {
+		return OutboxMessage{}, ErrBindingInactive
+	}
+	if o.BudgetUnits <= 0 {
+		o.BudgetUnits = 1
+	}
+	now := s.now()
+	if c.LastInboundAt.IsZero() || now.Sub(c.LastInboundAt) > s.policy.Window {
+		return OutboxMessage{}, ErrWindowClosed
+	}
+	if c.WindowUsed+o.BudgetUnits > s.policy.MaxSends {
+		return OutboxMessage{}, ErrBudgetExceeded
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE customers SET window_used=window_used+?,updated_at=? WHERE id=?`, o.BudgetUnits, unix(now), c.ID); err != nil {
+		return OutboxMessage{}, err
 	}
 	if o.ID == "" {
 		o.ID, err = randomID("out_")
@@ -938,15 +1035,11 @@ func (s *Store) CreateOutbox(ctx context.Context, o OutboxMessage) (OutboxMessag
 	if o.State == "" {
 		o.State = OutboxCreated
 	}
-	if o.BudgetUnits <= 0 {
-		o.BudgetUnits = 1
-	}
 	sealedBody, err := s.sealField(o.Body, "outbox.body")
 	if err != nil {
 		return OutboxMessage{}, err
 	}
-	now := s.now()
-	_, err = tx.ExecContext(ctx, `INSERT INTO outbox(id,binding_id,customer_id,generation,uid,body,content_ref,state,budget_units,budget_reserved,attempt,error_category,external_msg_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,1,?,?,?,?,?)`, o.ID, c.BindingID, c.ID, c.Generation, c.UID, sealedBody, o.ContentRef, o.State, o.BudgetUnits, o.Attempt, o.ErrorCategory, o.ExternalMsgID, unix(now), unix(now))
+	_, err = tx.ExecContext(ctx, `INSERT INTO outbox(id,binding_id,customer_id,generation,uid,body,content_ref,state,budget_units,budget_reserved,attempt,error_category,external_msg_id,created_at,updated_at,chunks_total) VALUES(?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?)`, o.ID, c.BindingID, c.ID, c.Generation, c.UID, sealedBody, o.ContentRef, o.State, o.BudgetUnits, o.Attempt, o.ErrorCategory, o.ExternalMsgID, unix(now), unix(now), o.ChunksTotal)
 	if err != nil {
 		return OutboxMessage{}, err
 	}
@@ -965,7 +1058,7 @@ func scanOutbox(row interface{ Scan(...any) error }) (OutboxMessage, error) {
 	var o OutboxMessage
 	var r int
 	var ifn, cat, uat int64
-	err := row.Scan(&o.ID, &o.BindingID, &o.CustomerID, &o.Generation, &o.UID, &o.Body, &o.ContentRef, &o.State, &o.BudgetUnits, &r, &o.Attempt, &o.ErrorCategory, &o.ExternalMsgID, &ifn, &cat, &uat)
+	err := row.Scan(&o.ID, &o.BindingID, &o.CustomerID, &o.Generation, &o.UID, &o.Body, &o.ContentRef, &o.State, &o.BudgetUnits, &r, &o.Attempt, &o.ErrorCategory, &o.ExternalMsgID, &ifn, &cat, &uat, &o.ChunksTotal, &o.ChunksSent)
 	o.BudgetReserved = r != 0
 	o.InFlightAt = timeFrom(ifn)
 	o.CreatedAt = timeFrom(cat)
@@ -973,7 +1066,7 @@ func scanOutbox(row interface{ Scan(...any) error }) (OutboxMessage, error) {
 	return o, err
 }
 func outboxSelect() string {
-	return `SELECT id,binding_id,customer_id,generation,uid,body,content_ref,state,budget_units,budget_reserved,attempt,error_category,external_msg_id,in_flight_at,created_at,updated_at FROM outbox`
+	return `SELECT id,binding_id,customer_id,generation,uid,body,content_ref,state,budget_units,budget_reserved,attempt,error_category,external_msg_id,in_flight_at,created_at,updated_at,chunks_total,chunks_sent FROM outbox`
 }
 func (s *Store) Outbox(ctx context.Context, id string) (OutboxMessage, error) {
 	return s.openOutbox(scanOutbox(s.db.QueryRowContext(ctx, outboxSelect()+` WHERE id=?`, id)))
@@ -1052,6 +1145,61 @@ func (s *Store) MarkOutboxUnknown(ctx context.Context, id, category string) (Out
 	}
 	return s.Outbox(ctx, id)
 }
+
+// RecordOutboxChunk durably records that chunk (1-based) was accepted
+// upstream, so a mid-way failure leaves an exact record of what was sent.
+func (s *Store) RecordOutboxChunk(ctx context.Context, id string, chunk int, externalMsgID string) error {
+	if id == "" || chunk <= 0 {
+		return ErrInvalidID
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := unix(s.now())
+	if _, err = tx.ExecContext(ctx, `INSERT INTO outbox_chunks(outbox_id,chunk,external_msg_id,sent_at) VALUES(?,?,?,?)`, id, chunk, externalMsgID, now); err != nil {
+		return err
+	}
+	r, err := tx.ExecContext(ctx, `UPDATE outbox SET chunks_sent=?,external_msg_id=?,updated_at=? WHERE id=? AND state=?`, chunk, externalMsgID, now, id, OutboxSending)
+	if err != nil {
+		return err
+	}
+	if err = rowsOrNotFound(r); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// OutboxChunkIDs returns the upstream msgids of accepted chunks in order.
+func (s *Store) OutboxChunkIDs(ctx context.Context, id string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT external_msg_id FROM outbox_chunks WHERE outbox_id=? ORDER BY chunk`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// ReleaseBudget returns units that provably were never sent (chunks not
+// attempted, or a request that never reached upstream).
+func (s *Store) ReleaseBudget(ctx context.Context, customerID string, units int) error {
+	if units <= 0 {
+		return nil
+	}
+	defer s.lock("customer:" + customerID)()
+	_, err := s.db.ExecContext(ctx, `UPDATE customers SET window_used=MAX(0,window_used-?),updated_at=? WHERE id=?`, units, unix(s.now()), customerID)
+	return err
+}
+
 func validOutboxState(v string) bool {
 	switch v {
 	case OutboxCreated, OutboxValidated, OutboxSending, OutboxUpstreamAccepted, OutboxDeliveryFailed, OutboxUnknown, OutboxRejected, OutboxBlocked:

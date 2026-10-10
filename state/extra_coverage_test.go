@@ -77,7 +77,7 @@ func TestStoreValidationAndReads(t *testing.T) {
 			t.Fatalf("binding %v", err)
 		}
 	}
-	if err := s.PutBinding(ctx, Binding{ID: "b", EnterpriseID: "e", OpenKfID: "k", ProjectID: "p"}); err != nil {
+	if err := s.PutBinding(ctx, Binding{ID: "b", EnterpriseID: "e", OpenKfID: "k", ProjectID: "p", Active: true}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Binding(ctx, "b"); err != nil {
@@ -134,7 +134,7 @@ func TestStoreTransitionBranches(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 	_ = s.PutEnterprise(ctx, Enterprise{ID: "e", TenantID: "t", CorpID: "c", CredentialRef: "r"})
-	_ = s.PutBinding(ctx, Binding{ID: "b", EnterpriseID: "e", OpenKfID: "k", ProjectID: "p"})
+	_ = s.PutBinding(ctx, Binding{ID: "b", EnterpriseID: "e", OpenKfID: "k", ProjectID: "p", Active: true})
 	_ = s.EnsureScope(ctx, "scope", "b")
 	c, _ := s.EnsureCustomer(ctx, "e", "b", "u")
 	if _, err := s.CommitSyncPage(ctx, "missing", "x", false, nil); !errors.Is(err, ErrNotFound) {
@@ -172,6 +172,7 @@ func TestStoreTransitionBranches(t *testing.T) {
 	if _, err := s.TransitionInbox(ctx, in.ID, InboxReady, ""); !errors.Is(err, ErrInvalidState) {
 		t.Fatal(err)
 	}
+	openWindow(t, s, c.ID)
 	o, err := s.CreateOutbox(ctx, OutboxMessage{CustomerID: c.ID, Generation: c.Generation, UID: c.UID, Body: "x"})
 	if err != nil {
 		t.Fatal(err)
@@ -220,8 +221,9 @@ func TestStoreTransitionBranches(t *testing.T) {
 	}
 	s2 := testStore(t)
 	_ = s2.PutEnterprise(ctx, Enterprise{ID: "e", TenantID: "t", CorpID: "c", CredentialRef: "r"})
-	_ = s2.PutBinding(ctx, Binding{ID: "b", EnterpriseID: "e", OpenKfID: "k", ProjectID: "p"})
+	_ = s2.PutBinding(ctx, Binding{ID: "b", EnterpriseID: "e", OpenKfID: "k", ProjectID: "p", Active: true})
 	cc, _ := s2.EnsureCustomer(ctx, "e", "b", "u")
+	openWindow(t, s2, cc.ID)
 	oo, _ := s2.CreateOutbox(ctx, OutboxMessage{CustomerID: cc.ID, Generation: cc.Generation, UID: cc.UID})
 	_ = s2.SetCustomerState(ctx, cc.ID, CustomerHuman)
 	if _, err := s2.MarkOutboxSending(ctx, oo.ID); !errors.Is(err, ErrHeld) {
@@ -229,8 +231,9 @@ func TestStoreTransitionBranches(t *testing.T) {
 	}
 	s3 := testStore(t)
 	_ = s3.PutEnterprise(ctx, Enterprise{ID: "e", TenantID: "t", CorpID: "c", CredentialRef: "r"})
-	_ = s3.PutBinding(ctx, Binding{ID: "b", EnterpriseID: "e", OpenKfID: "k", ProjectID: "p"})
+	_ = s3.PutBinding(ctx, Binding{ID: "b", EnterpriseID: "e", OpenKfID: "k", ProjectID: "p", Active: true})
 	cc, _ = s3.EnsureCustomer(ctx, "e", "b", "u")
+	openWindow(t, s3, cc.ID)
 	oo, _ = s3.CreateOutbox(ctx, OutboxMessage{CustomerID: cc.ID, Generation: cc.Generation, UID: cc.UID})
 	_, _ = s3.BeginHandover(ctx, cc.ID, "h")
 	_, _ = s3.RecoverCustomer(ctx, cc.ID, "r")
@@ -264,7 +267,7 @@ func TestStoreOpenAndUIDFailures(t *testing.T) {
 	defer s.Close()
 	ctx := context.Background()
 	_ = s.PutEnterprise(ctx, Enterprise{ID: "e", TenantID: "t", CorpID: "c", CredentialRef: "r"})
-	_ = s.PutBinding(ctx, Binding{ID: "b", EnterpriseID: "e", OpenKfID: "k", ProjectID: "p"})
+	_ = s.PutBinding(ctx, Binding{ID: "b", EnterpriseID: "e", OpenKfID: "k", ProjectID: "p", Active: true})
 	if _, err := s.EnsureCustomer(ctx, "e", "b", "u"); err == nil {
 		t.Fatal("uid")
 	}
@@ -283,7 +286,7 @@ func TestExhaustiveTransitionsAndErrors(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 	_ = s.PutEnterprise(ctx, Enterprise{ID: "e", TenantID: "t", CorpID: "c", CredentialRef: "r"})
-	_ = s.PutBinding(ctx, Binding{ID: "b", EnterpriseID: "e", OpenKfID: "k", ProjectID: "p"})
+	_ = s.PutBinding(ctx, Binding{ID: "b", EnterpriseID: "e", OpenKfID: "k", ProjectID: "p", Active: true})
 	_ = s.EnsureScope(ctx, "scope", "b")
 	if _, err := s.BindingByOpenKfID(ctx, "e", "k"); err != nil {
 		t.Fatal(err)
@@ -327,6 +330,7 @@ func TestExhaustiveTransitionsAndErrors(t *testing.T) {
 	}
 	// Keep one pending row so rows.Next and scanOutbox are exercised.
 	c, _ = s.RecoverCustomer(ctx, c.ID, "resume")
+	openWindow(t, s, c.ID)
 	o, err := s.CreateOutbox(ctx, OutboxMessage{CustomerID: c.ID, Generation: c.Generation, UID: c.UID, Body: "pending"})
 	if err != nil {
 		t.Fatal(err)
@@ -351,7 +355,7 @@ func TestClosedDBErrorBranches(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 	_ = s.PutEnterprise(ctx, Enterprise{ID: "e", TenantID: "t", CorpID: "c", CredentialRef: "r"})
-	_ = s.PutBinding(ctx, Binding{ID: "b", EnterpriseID: "e", OpenKfID: "k", ProjectID: "p"})
+	_ = s.PutBinding(ctx, Binding{ID: "b", EnterpriseID: "e", OpenKfID: "k", ProjectID: "p", Active: true})
 	_ = s.EnsureScope(ctx, "scope", "b")
 	_ = s.MarkSyncPending(ctx, "scope", true)
 	_, _ = s.Enterprise(ctx, "e")
@@ -411,7 +415,7 @@ func TestRecoverInvalidGeneratedUID(t *testing.T) {
 	}
 	ctx := context.Background()
 	_ = s.PutEnterprise(ctx, Enterprise{ID: "e", TenantID: "t", CorpID: "c", CredentialRef: "r"})
-	_ = s.PutBinding(ctx, Binding{ID: "b", EnterpriseID: "e", OpenKfID: "k", ProjectID: "p"})
+	_ = s.PutBinding(ctx, Binding{ID: "b", EnterpriseID: "e", OpenKfID: "k", ProjectID: "p", Active: true})
 	c, err := s.EnsureCustomer(ctx, "e", "b", "u")
 	if err != nil {
 		t.Fatal(err)
@@ -451,7 +455,7 @@ func TestSQLTriggerErrorBranches(t *testing.T) {
 		t.Helper()
 		s := testStore(t)
 		_ = s.PutEnterprise(ctx, Enterprise{ID: "e", TenantID: "t", CorpID: "c", CredentialRef: "r"})
-		_ = s.PutBinding(ctx, Binding{ID: "b", EnterpriseID: "e", OpenKfID: "k", ProjectID: "p"})
+		_ = s.PutBinding(ctx, Binding{ID: "b", EnterpriseID: "e", OpenKfID: "k", ProjectID: "p", Active: true})
 		_ = s.EnsureScope(ctx, "scope", "b")
 		return s
 	}

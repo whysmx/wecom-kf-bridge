@@ -21,6 +21,7 @@ func TestBodiesEncryptedAtRest(t *testing.T) {
 	if _, err := s.CommitSyncPage(ctx, "s1", "n1", false, []InboxMessage{{BindingID: "b1", ExternalMsgID: "m1", CompatMsgID: 1, PayloadRef: "客户机密正文"}}); err != nil {
 		t.Fatal(err)
 	}
+	openWindow(t, s, c.ID)
 	o, err := s.CreateOutbox(ctx, OutboxMessage{CustomerID: c.ID, Generation: c.Generation, UID: c.UID, Body: "AI 回答正文"})
 	if err != nil {
 		t.Fatal(err)
@@ -79,5 +80,13 @@ func TestNoSealerRejectsSensitiveWrites(t *testing.T) {
 	}
 	if _, err := OpenWithOptions(t.TempDir()+"/y.db", Options{MasterKey: []byte{1}}); err == nil {
 		t.Fatal("invalid master key accepted by Open")
+	}
+}
+
+// openWindow simulates a fresh customer-initiated message for c.
+func openWindow(t *testing.T, s *Store, customerID string) {
+	t.Helper()
+	if _, err := s.DB().Exec(`UPDATE customers SET last_inbound_at=?,window_used=0 WHERE id=?`, unix(s.now()), customerID); err != nil {
+		t.Fatal(err)
 	}
 }

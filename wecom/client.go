@@ -77,6 +77,7 @@ func (c *Client) httpClient() *http.Client {
 	c.init()
 	return c.shared
 }
+
 var defaultHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
 func (c *Client) init() {
