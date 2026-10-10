@@ -74,10 +74,19 @@ type WeComAdapter struct {
 	states  map[int]string
 	store   *state.Store
 	now     func() time.Time
+	rmu     sync.RWMutex
+}
+
+func (a *WeComAdapter) setRoute(bindingID string, r bindingRoute) {
+	a.rmu.Lock()
+	a.routes[bindingID] = r
+	a.rmu.Unlock()
 }
 
 func (a *WeComAdapter) route(bindingID string) (bindingRoute, *wecom.Client, *tokenCache, error) {
+	a.rmu.RLock()
 	r, ok := a.routes[bindingID]
+	a.rmu.RUnlock()
 	if !ok {
 		return r, nil, nil, errors.New("runtime: unknown binding")
 	}

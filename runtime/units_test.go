@@ -182,19 +182,18 @@ func TestSyncWorkerAndNotifications(t *testing.T) {
 	cl := wecom.NewClient(wx.URL, "c", "s")
 	var synced atomic.Int32
 	w := &SyncWorker{Store: st, Scopes: map[string]scopeInfo{"sc": {enterpriseID: "e1", bindingID: "b1", openKfID: "kf1", client: cl, tokens: &tokenCache{client: cl, now: time.Now}}}, Origins: wecom.OriginPolicy{CustomerOrigins: []int{3}}, Interval: 20 * time.Millisecond, MaxConc: 1, Logger: nopRuntimeLogger{}, OnSynced: func() { synced.Add(1) }}
-	g := &Gateway{Store: st, Sync: w}
+	g := &Gateway{Store: st, Sync: w, scopes: map[string]string{"e1|kf1": "sc"}}
 	ctx := context.Background()
-	scopes := map[string]string{"e1|kf1": "sc"}
-	if err := g.onNotification(ctx, "e1", wecom.Notification{Event: "other"}, scopes); err != nil {
+	if err := g.onNotification(ctx, "e1", wecom.Notification{Event: "other"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.onNotification(ctx, "e1", wecom.Notification{Event: "kf_msg_or_event", OpenKfID: "zzz"}, scopes); err == nil {
+	if err := g.onNotification(ctx, "e1", wecom.Notification{Event: "kf_msg_or_event", OpenKfID: "zzz"}); err == nil {
 		t.Fatal("unbound kf accepted")
 	}
-	if err := g.onNotification(ctx, "e1", wecom.Notification{Event: "kf_msg_or_event", OpenKfID: "kf1"}, scopes); err != nil {
+	if err := g.onNotification(ctx, "e1", wecom.Notification{Event: "kf_msg_or_event", OpenKfID: "kf1"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.onNotification(ctx, "e1", wecom.Notification{Event: "kf_msg_or_event", OpenKfID: "kf1", Token: "P"}, scopes); err != nil {
+	if err := g.onNotification(ctx, "e1", wecom.Notification{Event: "kf_msg_or_event", OpenKfID: "kf1", Token: "P"}); err != nil {
 		t.Fatal(err)
 	}
 	w.Wake("unknown-scope")

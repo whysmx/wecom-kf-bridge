@@ -47,6 +47,14 @@ type SyncWorker struct {
 	mu      sync.Mutex
 	running map[string]bool
 	again   map[string]bool
+	smu     sync.RWMutex
+}
+
+// SetScope registers a scope at runtime (admin-created binding).
+func (w *SyncWorker) SetScope(scope string, info scopeInfo) {
+	w.smu.Lock()
+	defer w.smu.Unlock()
+	w.Scopes[scope] = info
 }
 
 func (w *SyncWorker) init() {
@@ -136,7 +144,9 @@ func (w *SyncWorker) resumePending(ctx context.Context, start func(string)) {
 
 // SyncOnce runs one SyncAll for a scope.
 func (w *SyncWorker) SyncOnce(ctx context.Context, scope string) {
+	w.smu.RLock()
 	info, ok := w.Scopes[scope]
+	w.smu.RUnlock()
 	if !ok {
 		return
 	}
@@ -176,6 +186,20 @@ type DeliveryWorker struct {
 
 	kick chan struct{}
 	once sync.Once
+	tmu  sync.RWMutex
+}
+
+// SetTarget updates a binding's callback URL/agent at runtime (admin).
+func (d *DeliveryWorker) SetTarget(bindingID, url, agentID string) {
+	d.tmu.Lock()
+	defer d.tmu.Unlock()
+	d.CallbackURL[bindingID], d.AgentID[bindingID] = url, agentID
+}
+
+func (d *DeliveryWorker) target(bindingID string) (string, string) {
+	d.tmu.RLock()
+	defer d.tmu.RUnlock()
+	return d.CallbackURL[bindingID], d.AgentID[bindingID]
 }
 
 func (d *DeliveryWorker) init() { d.once.Do(func() { d.kick = make(chan struct{}, 1) }) }
@@ -271,11 +295,11 @@ func (d *DeliveryWorker) deliver(ctx context.Context, m state.InboxMessage) bool
 		// Never substitute the current time or 0 (docs/03 §6).
 		return step(state.InboxHeld, "missing_create_time")
 	}
-	target := d.CallbackURL[m.BindingID]
+	target, agentID := d.target(m.BindingID)
 	if target == "" {
 		return step(state.InboxHeld, "no_callback_url")
 	}
-	cb, err := d.Server.BuildCallback(m.BindingID, bridge.InboundMessage{FromUserName: c.UID, CreateTime: m.CreateTime.Unix(), MsgType: "text", Content: m.PayloadRef, MsgID: fmt.Sprint(m.CompatMsgID), AgentID: d.AgentID[m.BindingID]})
+	cb, err := d.Server.BuildCallback(m.BindingID, bridge.InboundMessage{FromUserName: c.UID, CreateTime: m.CreateTime.Unix(), MsgType: "text", Content: m.PayloadRef, MsgID: fmt.Sprint(m.CompatMsgID), AgentID: agentID})
 	if err != nil {
 		return step(state.InboxHeld, "build_failed")
 	}

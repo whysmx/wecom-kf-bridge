@@ -36,6 +36,8 @@ type Credentials struct {
 	Secret string `json:"secret"`
 	Token  string `json:"token"`
 	AESKey string `json:"aes_key"`
+	// AgentID is the cc-connect agent_id (optional; kept on rotation).
+	AgentID string `json:"agent_id,omitempty"`
 }
 
 // Runtime is the running gateway the console reconfigures.

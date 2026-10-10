@@ -17,12 +17,15 @@ import (
 // (docs/11 §5); the keys follow the documented layout. Secrets are never
 // written in the file: *_env fields name environment variables.
 //
-// Enterprises/bindings are seeded into SQLite at start-up. There is no admin
-// UI yet, so this file is the bootstrap source for them.
+// Enterprises/bindings are seeded into SQLite on first start-up; once a
+// record exists, SQLite (changed through the admin console) wins.
 type Config struct {
 	Server struct {
 		PublicListen string `json:"public_listen"`
 	} `json:"server"`
+	// Admin is the single-enterprise console (docs/17). It is disabled
+	// unless listen is set, and never shares the public listener.
+	Admin   AdminConfig `json:"admin"`
 	Storage struct {
 		Database string `json:"database"`
 	} `json:"storage"`
@@ -55,6 +58,18 @@ type Config struct {
 	} `json:"wecom"`
 	Enterprises []EnterpriseConfig `json:"enterprises"`
 	Bindings    []BindingConfig    `json:"bindings"`
+}
+
+type AdminConfig struct {
+	Listen string `json:"listen"`
+	// Origin is the exact browser origin, e.g. https://admin.example:8443
+	// (default http://<listen>).
+	Origin string `json:"origin"`
+	// PasswordHashEnv names the env var holding the bcrypt password hash.
+	PasswordHashEnv   string `json:"password_hash_env"`
+	CompanyName       string `json:"company_name"`
+	SessionTTLMinutes int    `json:"session_ttl_minutes"`
+	MaxSessions       int    `json:"max_sessions"`
 }
 
 type CallbackTarget struct {
@@ -140,6 +155,17 @@ func (c *Config) defaults() {
 
 func (c Config) Validate() error {
 	var errs []string
+	if c.Admin.Listen != "" {
+		if len(c.Enterprises) != 1 {
+			errs = append(errs, "admin console requires exactly one enterprise (single-enterprise deployment)")
+		}
+		if c.Admin.PasswordHashEnv == "" {
+			errs = append(errs, "admin.password_hash_env required")
+		}
+		if c.Admin.Listen == c.Server.PublicListen {
+			errs = append(errs, "admin.listen must differ from server.public_listen")
+		}
+	}
 	if c.Storage.Database == "" {
 		errs = append(errs, "storage.database required")
 	}

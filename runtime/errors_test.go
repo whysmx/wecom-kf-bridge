@@ -81,9 +81,9 @@ func TestBuildFailsClosedOnEachSecret(t *testing.T) {
 
 func TestNotificationStoreFailure(t *testing.T) {
 	st, _ := unitStore(t)
-	g := &Gateway{Store: st, Sync: &SyncWorker{}}
+	g := &Gateway{Store: st, Sync: &SyncWorker{}, scopes: map[string]string{"e1|kf1": "sc"}}
 	st.Close()
-	if err := g.onNotification(context.Background(), "e1", wecom.Notification{Event: "kf_msg_or_event", OpenKfID: "kf1"}, map[string]string{"e1|kf1": "sc"}); err == nil {
+	if err := g.onNotification(context.Background(), "e1", wecom.Notification{Event: "kf_msg_or_event", OpenKfID: "kf1"}); err == nil {
 		t.Fatal("store failure swallowed: WeChat must see a non-success and retry")
 	}
 }

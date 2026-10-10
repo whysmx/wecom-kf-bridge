@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	bridge "github.com/whysmx/wecom-kf-bridge"
@@ -24,7 +25,15 @@ type Gateway struct {
 	Sync     *SyncWorker
 	Delivery *DeliveryWorker
 	Workers  []Worker
-	lock     *InstanceLock
+	// Admin is the console handler (nil unless admin.listen is set).
+	Admin http.Handler
+	lock  *InstanceLock
+
+	adapter *WeComAdapter
+	vmu     sync.Mutex
+	vbs     map[string]bridge.Binding
+	kfmu    sync.RWMutex
+	scopes  map[string]string // enterprise|open_kfid -> scope
 }
 
 func (g *Gateway) Close() error {
@@ -80,7 +89,7 @@ func (g *Gateway) wire(ctx context.Context, cfg Config, logger Logger) error {
 	}
 	g.Router = wecom.NewRouter()
 	g.Sync = &SyncWorker{Store: st, Scopes: map[string]scopeInfo{}, Origins: wecom.OriginPolicy{CustomerOrigins: cfg.WeCom.CustomerOrigins}, Interval: time.Duration(cfg.Workers.SyncIntervalSeconds) * time.Second, MaxPages: cfg.Workers.MaxSyncPages, MaxConc: cfg.Workers.MaxConcurrency, Logger: logger}
-	scopesByKf := map[string]string{} // enterprise|open_kfid -> scope
+	g.adapter, g.vbs, g.scopes = adapter, map[string]bridge.Binding{}, map[string]string{}
 	for _, e := range cfg.Enterprises {
 		secret, err := secretEnv(e.SecretEnv)
 		if err != nil {
@@ -94,9 +103,10 @@ func (g *Gateway) wire(ctx context.Context, cfg Config, logger Logger) error {
 		adapter.clients[e.ID] = cl
 		adapter.tokens[e.ID] = &tokenCache{client: cl, now: time.Now}
 	}
-	var vbs []bridge.Binding
 	g.Delivery = &DeliveryWorker{Store: st, CallbackURL: map[string]string{}, AgentID: map[string]string{}, HTTP: callbackHTTPClient(cfg), Interval: time.Duration(cfg.Workers.DeliveryIntervalMillis) * time.Millisecond, MaxAttempts: cfg.Workers.MaxDeliveryAttempts, MaxConc: cfg.Workers.MaxConcurrency, Logger: logger}
+	configured := map[string]bool{}
 	for _, b := range cfg.Bindings {
+		configured[b.ID] = true
 		vsecret, err := secretEnv(b.VirtualSecretEnv)
 		if err != nil {
 			return err
@@ -116,19 +126,36 @@ func (g *Gateway) wire(ctx context.Context, cfg Config, logger Logger) error {
 		if rev <= 0 {
 			rev = 1
 		}
-		if err := st.PutBinding(ctx, state.Binding{ID: b.ID, EnterpriseID: b.EnterpriseID, OpenKfID: b.OpenKfID, ProjectID: b.ProjectID, CallbackURL: b.CallbackURL, Active: !b.Disabled, Revision: rev}); err != nil {
+		sb, err := g.bootstrapBinding(ctx, state.Binding{ID: b.ID, EnterpriseID: b.EnterpriseID, OpenKfID: b.OpenKfID, ProjectID: b.ProjectID, CallbackURL: b.CallbackURL, Active: !b.Disabled, Revision: rev})
+		if err != nil {
 			return err
 		}
-		scope := "scope:" + b.EnterpriseID + ":" + b.OpenKfID
-		if err := st.EnsureScope(ctx, scope, b.ID); err != nil {
+		vb := bridge.Binding{ID: b.ID, CorpID: b.VirtualCorpID, CorpSecret: vsecret, AgentID: b.AgentID, CallbackToken: vtok, CallbackAESKey: vaes}
+		if err := g.register(ctx, sb, g.withStoredCredentials(ctx, vb)); err != nil {
 			return err
 		}
-		scopesByKf[b.EnterpriseID+"|"+b.OpenKfID] = scope
-		g.Sync.Scopes[scope] = scopeInfo{enterpriseID: b.EnterpriseID, bindingID: b.ID, openKfID: b.OpenKfID, client: adapter.clients[b.EnterpriseID], tokens: adapter.tokens[b.EnterpriseID]}
-		adapter.routes[b.ID] = bindingRoute{enterpriseID: b.EnterpriseID, openKfID: b.OpenKfID}
-		g.Delivery.CallbackURL[b.ID] = b.CallbackURL
-		g.Delivery.AgentID[b.ID] = b.AgentID
-		vbs = append(vbs, bridge.Binding{ID: b.ID, CorpID: b.VirtualCorpID, CorpSecret: vsecret, AgentID: b.AgentID, CallbackToken: vtok, CallbackAESKey: vaes, Enabled: !b.Disabled, Revision: rev})
+	}
+	// Bindings created in the console exist only in SQLite.
+	all, err := st.Bindings(ctx)
+	if err != nil {
+		return err
+	}
+	for _, b := range all {
+		if configured[b.ID] || adapter.clients[b.EnterpriseID] == nil {
+			continue
+		}
+		vb := g.withStoredCredentials(ctx, bridge.Binding{ID: b.ID})
+		if vb.CorpID == "" {
+			logger.Log("binding_without_credentials", map[string]any{"binding_id": b.ID})
+			continue
+		}
+		if err := g.register(ctx, b, vb); err != nil {
+			return err
+		}
+	}
+	var vbs []bridge.Binding
+	for _, vb := range g.vbs {
+		vbs = append(vbs, vb)
 	}
 	for _, e := range cfg.Enterprises {
 		tok, err := secretEnv(e.CallbackTokenEnv)
@@ -146,7 +173,7 @@ func (g *Gateway) wire(ctx context.Context, cfg Config, logger Logger) error {
 		wh.Logger = logger
 		entID := e.ID
 		wh.OnNotification = func(ctx context.Context, n wecom.Notification) error {
-			return g.onNotification(ctx, entID, n, scopesByKf)
+			return g.onNotification(ctx, entID, n)
 		}
 		if err := g.Router.Handle(e.TenantKey, wh); err != nil {
 			return fmt.Errorf("enterprise %s: invalid tenant_key", e.ID)
@@ -166,17 +193,26 @@ func (g *Gateway) wire(ctx context.Context, cfg Config, logger Logger) error {
 	mux.Handle("/", g.Health)
 	g.Handler = mux
 	g.Workers = []Worker{g.Sync, g.Delivery}
+	if cfg.Admin.Listen != "" {
+		h, err := g.buildAdmin(cfg)
+		if err != nil {
+			return err
+		}
+		g.Admin = h
+	}
 	return nil
 }
 
 // onNotification runs inside the callback request: a short transaction
 // stores the sealed pull token / pending flag, then the worker is woken.
 // It does not wait for sync or AI (docs/04 §3).
-func (g *Gateway) onNotification(ctx context.Context, entID string, n wecom.Notification, scopes map[string]string) error {
+func (g *Gateway) onNotification(ctx context.Context, entID string, n wecom.Notification) error {
 	if n.Event != "kf_msg_or_event" {
 		return nil
 	}
-	scope, ok := scopes[entID+"|"+n.OpenKfID]
+	g.kfmu.RLock()
+	scope, ok := g.scopes[entID+"|"+n.OpenKfID]
+	g.kfmu.RUnlock()
 	if !ok {
 		return errors.New("runtime: notification for unbound open_kfid")
 	}

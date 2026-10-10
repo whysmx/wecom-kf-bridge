@@ -23,11 +23,15 @@ type AppConfig struct {
 	// Workers run for the lifetime of Serve; Shutdown cancels them and
 	// waits for them up to ShutdownTimeout.
 	Workers []Worker
+	// AdminAddr/AdminHandler serve the admin console on its own listener.
+	AdminAddr    string
+	AdminHandler http.Handler
 }
 type App struct {
 	cfg       AppConfig
 	mu        sync.RWMutex
 	server    *http.Server
+	admin     *http.Server
 	stopW     context.CancelFunc
 	workersWG sync.WaitGroup
 	ready     chan struct{}
@@ -68,6 +72,14 @@ func (a *App) ListenAndServe() error {
 	if err != nil {
 		return err
 	}
+	if a.cfg.AdminHandler != nil {
+		aln, err := net.Listen("tcp", a.cfg.AdminAddr)
+		if err != nil {
+			ln.Close()
+			return fmt.Errorf("admin listener: %w", err)
+		}
+		a.ServeAdmin(aln)
+	}
 	return a.Serve(ln)
 }
 func (a *App) Serve(ln net.Listener) error {
@@ -97,13 +109,26 @@ func (a *App) Serve(ln net.Listener) error {
 	}
 	return err
 }
+
+// ServeAdmin serves the admin console on ln in the background.
+func (a *App) ServeAdmin(ln net.Listener) {
+	srv := &http.Server{Handler: a.cfg.AdminHandler, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
+	a.mu.Lock()
+	a.admin = srv
+	a.mu.Unlock()
+	go srv.Serve(ln)
+}
+
 func (a *App) Shutdown(ctx context.Context) error {
 	if a == nil {
 		return nil
 	}
 	a.mu.RLock()
-	server := a.server
+	server, admin := a.server, a.admin
 	a.mu.RUnlock()
+	if admin != nil {
+		_ = admin.Shutdown(ctx)
+	}
 	if server == nil {
 		return nil
 	}

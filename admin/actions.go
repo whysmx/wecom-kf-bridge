@@ -217,6 +217,7 @@ func (c *Console) bindingCreate(r *http.Request, _ *session) result {
 		return result{status: http.StatusServiceUnavailable, flash: "保存失败"}
 	}
 	cr := c.newCredentials()
+	cr.AgentID = agent
 	if err := c.saveCreds(r.Context(), b, cr); err != nil {
 		return result{status: http.StatusServiceUnavailable, flash: "保存凭证失败"}
 	}
@@ -294,6 +295,11 @@ func (c *Console) bindingRotate(r *http.Request, _ *session) result {
 		return conflict("绑定")
 	}
 	cr := c.newCredentials()
+	if raw, _, err := c.cfg.Store.BindingSecret(r.Context(), b.ID); err == nil {
+		var old Credentials
+		_ = json.Unmarshal([]byte(raw), &old)
+		cr.AgentID = old.AgentID
+	}
 	if err := c.saveCreds(r.Context(), nb, cr); err != nil {
 		return result{status: http.StatusServiceUnavailable, flash: "保存凭证失败"}
 	}

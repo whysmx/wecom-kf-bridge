@@ -34,7 +34,7 @@ func runContext(ctx context.Context, configPath string, out interface{ Write([]b
 		return 1
 	}
 	defer gw.Close()
-	app, err := newApp(bridgeRuntime.AppConfig{Addr: cfg.Server.PublicListen, Handler: gw.Handler, Health: gw.Health, Logger: logger, Workers: gw.Workers, ShutdownTimeout: bridgeRuntime.ShutdownGrace(cfg)})
+	app, err := newApp(bridgeRuntime.AppConfig{Addr: cfg.Server.PublicListen, Handler: gw.Handler, Health: gw.Health, Logger: logger, Workers: gw.Workers, ShutdownTimeout: bridgeRuntime.ShutdownGrace(cfg), AdminAddr: cfg.Admin.Listen, AdminHandler: gw.Admin})
 	if err != nil {
 		logger.Error("runtime_init_failed", err, nil)
 		return 1
