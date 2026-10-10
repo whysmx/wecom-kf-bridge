@@ -1,7 +1,7 @@
 # 评审问题修复记录（#1–#23）
 
 > 按用户要求维护（覆盖 AGENTS.md “不另维护修改记录”的一般规则）。哈希为本地提交。
-> 门禁：`go build ./...`、`go vet ./...`、`go test -race ./...` 通过；CI 严格覆盖率（>95%）当前约 92.9%，未通过。
+> 门禁：`go build ./...`、`go vet ./...`、`go test -race ./...` 通过；严格覆盖率门禁（>95%）通过，总计约 96.4%，见文末“覆盖率”条目。
 
 | # | 问题 | 修复 | 主要文件 | 测试 | 提交 | 遗留 |
 |---|---|---|---|---|---|---|
@@ -30,3 +30,15 @@
 | 23 | 文档完成状态矛盾 | README 新增“当前实现状态”并如实写覆盖率未达标；AGENTS、docs/09 同步 | README.md, AGENTS.md, docs/09 | — | 587372d | 其余专题文档仍描述目标设计 |
 
 附带修复：inbox `attempt` 原先每次状态迁移都 +1，导致重试次数被流水线迁移耗尽；改为仅进入 POSTING 时计数（ef0b7b6）。
+
+## 覆盖率（门禁补齐）
+
+- 问题：#1–#23 修复后覆盖率约 92.9%，CI 严格门禁（总计及各包均 >95%）不通过。
+- 修复：补充有行为断言的错误路径测试，未排除文件、未改统计口径：
+  - state：SQLite 触发器注入故障，验证事务原子性（客户创建/轮换、同步页、outbox 预算预留/释放、分块记录）；旧库迁移与只读库拒绝启动；篡改密文被检出；无主密钥拒绝写入正文；损坏行报错而非跳过；启动恢复失败上报。
+  - root（protocol.go）：store 失败绝不回成功；已发出未记录的分块记为 UNKNOWN；未授权/绑定停用/未知官方状态的错误码；随机源失败时不构造回调。
+  - runtime：每个密钥缺失/格式错误都拒绝启动；不可打开的数据库、非法 tenant_key；回调落库失败要求企微重试；worker 关停超时上报；sync/delivery 各错误分支（传输中断→DELIVERY_UNKNOWN、URL 非法→RETRY_WAIT、状态迁移失败停止后续）；拨号地址校验；令牌刷新失败。
+  - wecom：限流/退避期间 ctx 取消立即停止；Decrypt 拒绝坏填充、过短、长度越界、非 UTF-8。
+- 文件：protocol_fault_test.go, runtime/errors_test.go, state/fault_test.go, state/migrate_fault_test.go, wecom/edge_errors_test.go
+- 结果：总计约 96.4%；root 96.8%、runtime 97.5%、state 95.1%、wecom 96.3%、cmd 100%。
+- 遗留：state 余量小；剩余未覆盖多为事务 Commit 失败等难以确定性注入的分支。

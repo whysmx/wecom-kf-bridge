@@ -72,5 +72,5 @@ HTTP 回调 200 不代表 AI 已处理；客户端会过滤早于本次进程启
 - 已接通：`cmd/wecom-kf-bridge` 读取 JSON 配置（`WECOM_KF_BRIDGE_CONFIG`，示例 `config.example.json`，密钥只从环境变量读取），打开 SQLite，挂载 cc-connect 兼容 API（`/cgi-bin/gettoken`、`/cgi-bin/user/get`、`/cgi-bin/message/send`）、按租户路由的微信客服回调 `/webhooks/wechat-kf/{tenant_key}`、健康检查，并启动 sync/delivery worker；启动时回收中断的投递和发送。配置缺失或无效时进程直接退出，不会只起健康检查。
 - 已实现：先写 outbox 再发送、代际/接管栅栏、官方接待状态、48h/5 条窗口与预算、70006/70007/70008 区分、分块逐块记录；客户正文与拉取 token 落库加密；CompatMsgId 持久序列；origin 过滤；常量时间比较；令牌数量上限。
 - 未实现/未验证：管理后台、Windows 服务、真实企业微信全链路联调、对账任务（DELIVERY_UNKNOWN/UNKNOWN 只停在待核查）、`service_state_map` 需在测试企业中按官方取值配置。
-- 质量门禁：本地 `go build ./...`、`go vet ./...`、`go test -race ./...` 通过；CI 的严格覆盖率门禁（>95%）当前为约 92.9%，**未通过**，需补测试。不得据此宣称已完成生产联调。
+- 质量门禁：本地 `go build ./...`、`go vet ./...`、`go test -race ./...` 通过；严格覆盖率门禁（>95%，`-coverpkg=./...`）本地通过：总计约 96.4%，各包 root 96.8% / runtime 97.5% / state 95.1% / wecom 96.3% / cmd 100%（state 余量较小）。不得据此宣称已完成生产联调。
 
