@@ -240,7 +240,7 @@ func TestConfigValidationErrors(t *testing.T) {
 		t.Fatal("bad master key")
 	}
 	t.Setenv("BAD_MASTER", strings.Repeat("A", 43))
-	c.Enterprises = []EnterpriseConfig{{ID: "e", TenantKey: "k", CorpID: "c", SecretEnv: "UNSET_X"}}
+	c.Enterprises = []EnterpriseConfig{{ID: "e", TenantKey: "k", CorpID: "c", SecretEnv: "UNSET_X", CallbackTokenEnv: "UNSET_Y", CallbackAESKeyEnv: "UNSET_Z"}}
 	c.Storage.Database = t.TempDir() + "/x.db"
 	if _, err := Build(context.Background(), c, nil); err == nil || !strings.Contains(err.Error(), "UNSET_X") {
 		t.Fatalf("missing secret env: %v", err)

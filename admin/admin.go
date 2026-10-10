@@ -66,16 +66,19 @@ type Config struct {
 	PasswordHash []byte
 	// Origin is the exact scheme://host[:port] browsers use for the console;
 	// POSTs whose Origin/Referer differ are refused.
-	Origin       string
-	EnterpriseID string
-	CompanyName  string
-	CorpID       string
-	Settings     []Setting
-	SessionTTL   time.Duration
-	StepUpTTL    time.Duration
-	MaxSessions  int
-	Clock        func() time.Time
-	Random       io.Reader
+	Origin string
+	// InsecureCookie omits the Secure flag (plain-http loopback only; the
+	// runtime config enforces that).
+	InsecureCookie bool
+	EnterpriseID   string
+	CompanyName    string
+	CorpID         string
+	Settings       []Setting
+	SessionTTL     time.Duration
+	StepUpTTL      time.Duration
+	MaxSessions    int
+	Clock          func() time.Time
+	Random         io.Reader
 }
 
 type Console struct {
@@ -195,7 +198,7 @@ func (c *Console) drop(s *session) {
 }
 
 func (c *Console) setCookie(w http.ResponseWriter, value string, maxAge int) {
-	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: value, Path: "/admin", HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode, MaxAge: maxAge})
+	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: value, Path: "/admin", HttpOnly: true, Secure: !c.cfg.InsecureCookie, SameSite: http.SameSiteStrictMode, MaxAge: maxAge})
 }
 
 // checkPassword compares in constant time (bcrypt) and throttles: after 5

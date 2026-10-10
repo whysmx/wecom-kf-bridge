@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strconv"
@@ -49,6 +50,9 @@ type Config struct {
 	} `json:"send_policy"`
 	WeCom struct {
 		APIBaseURL string `json:"api_base_url"`
+		// AllowInsecureHTTP permits an http:// API base (tests/fakes only):
+		// the real corp secret and access_token would travel in cleartext.
+		AllowInsecureHTTP bool `json:"allow_insecure_http"`
 		// CustomerOrigins: sync_msg origin values treated as customer
 		// content. Must be set explicitly (AT-019); WxJava notes 3.
 		CustomerOrigins []int `json:"customer_origins"`
@@ -70,6 +74,21 @@ type AdminConfig struct {
 	CompanyName       string `json:"company_name"`
 	SessionTTLMinutes int    `json:"session_ttl_minutes"`
 	MaxSessions       int    `json:"max_sessions"`
+	// InsecureCookie drops the Secure cookie flag so a plain-http console
+	// works. Only allowed when listen is a loopback address (#34).
+	InsecureCookie bool `json:"insecure_cookie"`
+}
+
+func isLoopbackListen(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 type CallbackTarget struct {
@@ -165,12 +184,32 @@ func (c Config) Validate() error {
 		if c.Admin.Listen == c.Server.PublicListen {
 			errs = append(errs, "admin.listen must differ from server.public_listen")
 		}
+		origin := c.Admin.Origin
+		if origin == "" {
+			origin = "http://" + c.Admin.Listen
+		}
+		switch {
+		case c.Admin.InsecureCookie && !isLoopbackListen(c.Admin.Listen):
+			errs = append(errs, "admin.insecure_cookie is only allowed for a loopback admin.listen")
+		case !c.Admin.InsecureCookie && !strings.HasPrefix(origin, "https://"):
+			errs = append(errs, "admin.origin must be https:// (Secure cookie); for plain http on loopback set admin.insecure_cookie")
+		}
 	}
 	if c.Storage.Database == "" {
 		errs = append(errs, "storage.database required")
 	}
-	if u, err := url.Parse(c.WeCom.APIBaseURL); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
-		errs = append(errs, "wecom.api_base_url must be an http(s) URL")
+	if u, err := url.Parse(c.WeCom.APIBaseURL); err != nil || u.Host == "" || !(u.Scheme == "https" || (u.Scheme == "http" && c.WeCom.AllowInsecureHTTP)) {
+		errs = append(errs, "wecom.api_base_url must be an https URL (http only with wecom.allow_insecure_http)")
+	}
+	for i, t := range c.Security.CallbackTargets {
+		if strings.TrimSpace(t.Host) == "" || t.Port < 1 || t.Port > 65535 || len(t.AllowedCIDRs) == 0 {
+			errs = append(errs, fmt.Sprintf("security.callback_targets[%d]: host, port 1-65535 and allowed_cidrs required", i))
+		}
+		for _, cidr := range t.AllowedCIDRs {
+			if _, _, err := net.ParseCIDR(cidr); err != nil {
+				errs = append(errs, fmt.Sprintf("security.callback_targets[%d]: invalid CIDR %q", i, cidr))
+			}
+		}
 	}
 	if len(c.WeCom.CustomerOrigins) == 0 {
 		errs = append(errs, "wecom.customer_origins required (origin values are not guessed)")

@@ -31,7 +31,7 @@ func gatewayConfig(t *testing.T) Config {
 		t.Setenv(k, v)
 	}
 	raw := fmt.Sprintf(`{"storage":{"database":%q},"security":{"master_key_env":"G_MASTER","callback_targets":[{"host":"127.0.0.1","port":9,"allowed_cidrs":["127.0.0.0/8"]}]},
-	 "wecom":{"api_base_url":"http://127.0.0.1:1","customer_origins":[3]},
+	 "wecom":{"allow_insecure_http":true,"api_base_url":"http://127.0.0.1:1","customer_origins":[3]},
 	 "enterprises":[{"id":"e1","tenant_key":"acme","corp_id":"wwcorp","secret_env":"G_SECRET","callback_token_env":"G_CBTOK","callback_aes_key_env":"G_CBAES"}],
 	 "bindings":[{"id":"b1","enterprise_id":"e1","open_kfid":"kf1","project_id":"p1","virtual_corp_id":"bridge_a","agent_id":"1000002","virtual_secret_env":"G_VSECRET","callback_token_env":"G_VTOK","callback_aes_key_env":"G_VAES","callback_url":"http://127.0.0.1:9/cb"}]}`, t.TempDir()+"/g.db")
 	c, err := ParseConfig([]byte(raw))

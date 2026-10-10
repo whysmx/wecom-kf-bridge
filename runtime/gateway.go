@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -49,6 +50,14 @@ func (g *Gateway) Close() error {
 func Build(ctx context.Context, cfg Config, logger Logger) (*Gateway, error) {
 	if logger == nil {
 		logger = nopRuntimeLogger{}
+	}
+	// #37: Build is exported, so it applies defaults and validation itself.
+	cfg.defaults()
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	if cfg.WeCom.AllowInsecureHTTP && strings.HasPrefix(cfg.WeCom.APIBaseURL, "http://") {
+		logger.Log("SECURITY_WARNING_insecure_wecom_api", map[string]any{"api_base_url": cfg.WeCom.APIBaseURL, "warning": "corp secret and access_token are sent in cleartext; use only with local fakes"})
 	}
 	mk, err := secretEnv(cfg.Security.MasterKeyEnv)
 	if err != nil {

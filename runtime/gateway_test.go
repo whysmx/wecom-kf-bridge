@@ -120,7 +120,7 @@ func TestGatewayEndToEndWiring(t *testing.T) {
 	 "storage":{"database":%q},
 	 "security":{"master_key_env":"T_MASTER","callback_targets":[{"host":"127.0.0.1","port":%s,"allowed_cidrs":["127.0.0.0/8"]}]},
 	 "workers":{"sync_interval_seconds":1,"delivery_interval_millis":20},
-	 "wecom":{"api_base_url":%q,"customer_origins":[3],"service_state_map":{"1":"AI_ELIGIBLE","3":"HUMAN"}},
+	 "wecom":{"allow_insecure_http":true,"api_base_url":%q,"customer_origins":[3],"service_state_map":{"1":"AI_ELIGIBLE","3":"HUMAN"}},
 	 "enterprises":[{"id":"e1","tenant_key":"acme","corp_id":"wwcorp","secret_env":"T_SECRET","callback_token_env":"T_CBTOK","callback_aes_key_env":"T_CBAES"}],
 	 "bindings":[{"id":"b1","enterprise_id":"e1","open_kfid":"kf1","project_id":"p1","virtual_corp_id":"bridge_a","agent_id":"1000002","virtual_secret_env":"T_VSECRET","callback_token_env":"T_VTOK","callback_aes_key_env":"T_VAES","callback_url":%q}]}`,
 		t.TempDir()+"/g.db", port, wx.URL, ccSrv.URL+"/wecom/callback")

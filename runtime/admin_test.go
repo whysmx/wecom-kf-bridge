@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -335,6 +336,7 @@ func TestAdminConfigValidation(t *testing.T) {
 		t.Fatal("non-bcrypt hash accepted")
 	}
 	cfg.Admin.Origin = ""
+	cfg.Admin.InsecureCookie = true // loopback listen, plain http origin
 	hash, _ := bcrypt.GenerateFromPassword([]byte("x"), bcrypt.MinCost)
 	t.Setenv("G_ADMIN_HASH", string(hash))
 	g, err := Build(context.Background(), cfg, nil)
@@ -374,4 +376,88 @@ func TestAppServesAdminSeparately(t *testing.T) {
 		t.Fatal("admin listen error", err)
 	}
 	_ = errors.New
+}
+
+func TestReview3ConfigHardening(t *testing.T) {
+	base := adminGatewayConfig(t, 9)
+	cases := map[string]func(*Config){
+		"http api without flag":        func(c *Config) { c.WeCom.AllowInsecureHTTP = false },
+		"insecure cookie non-loopback": func(c *Config) { c.Admin.Listen = "0.0.0.0:8091"; c.Admin.InsecureCookie = true },
+		"http origin secure cookie":    func(c *Config) { c.Admin.Origin = "http://127.0.0.1:8091" },
+		"bad cidr": func(c *Config) {
+			c.Security.CallbackTargets = []CallbackTarget{{Host: "h", Port: 1, AllowedCIDRs: []string{"10.0.0.0/33"}}}
+		},
+		"port zero": func(c *Config) {
+			c.Security.CallbackTargets = []CallbackTarget{{Host: "h", Port: 0, AllowedCIDRs: []string{"10.0.0.0/8"}}}
+		},
+		"port too big": func(c *Config) {
+			c.Security.CallbackTargets = []CallbackTarget{{Host: "h", Port: 70000, AllowedCIDRs: []string{"10.0.0.0/8"}}}
+		},
+		"no cidrs": func(c *Config) { c.Security.CallbackTargets = []CallbackTarget{{Host: "h", Port: 1}} },
+		"empty host": func(c *Config) {
+			c.Security.CallbackTargets = []CallbackTarget{{Port: 1, AllowedCIDRs: []string{"10.0.0.0/8"}}}
+		},
+		"admin without enterprise": func(c *Config) { c.Enterprises = nil; c.Bindings = nil },
+	}
+	for name, mut := range cases {
+		c := base
+		c.Enterprises = append([]EnterpriseConfig(nil), base.Enterprises...)
+		c.Bindings = append([]BindingConfig(nil), base.Bindings...)
+		mut(&c)
+		if c.Validate() == nil {
+			t.Errorf("%s: accepted by Validate", name)
+		}
+		// #37: Build validates on its own and never panics.
+		if g, err := Build(context.Background(), c, nil); err == nil {
+			g.Close()
+			t.Errorf("%s: accepted by Build", name)
+		}
+	}
+	for _, l := range []string{"127.0.0.1:1", "[::1]:1", "localhost:1"} {
+		if !isLoopbackListen(l) {
+			t.Error(l)
+		}
+	}
+	if isLoopbackListen("10.0.0.1:1") || isLoopbackListen("bad") {
+		t.Fatal("non-loopback accepted")
+	}
+	// Build applies defaults to a hand-built config.
+	c := base
+	c.Server.PublicListen, c.Workers.MaxConcurrency = "", 0
+	c.Admin.Listen = "127.0.0.1:0"
+	g, err := Build(context.Background(), c, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.Close()
+}
+
+type captureLogger struct{ events []string }
+
+func (l *captureLogger) Log(ev string, _ map[string]any) { l.events = append(l.events, ev) }
+
+func TestInsecureAPIWarns(t *testing.T) {
+	l := &captureLogger{}
+	g, err := Build(context.Background(), gatewayConfig(t), l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.Close()
+	if !strings.Contains(strings.Join(l.events, ","), "SECURITY_WARNING_insecure_wecom_api") {
+		t.Fatal(l.events)
+	}
+}
+
+func TestExampleConfigIsValid(t *testing.T) {
+	raw, err := os.ReadFile("../config.example.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := ParseConfig(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Admin.InsecureCookie || !isLoopbackListen(c.Admin.Listen) || !strings.HasPrefix(c.WeCom.APIBaseURL, "https://") {
+		t.Fatal("example must use loopback plain-http admin explicitly and https API")
+	}
 }
