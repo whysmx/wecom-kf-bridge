@@ -72,6 +72,7 @@ HTTP 回调 200 不代表 AI 已处理；客户端会过滤早于本次进程启
 
 - 已接通：`cmd/wecom-kf-bridge` 读取 JSON 配置（`WECOM_KF_BRIDGE_CONFIG`，示例 `config.example.json`，密钥只从环境变量读取），打开 SQLite，挂载 cc-connect 兼容 API（`/cgi-bin/gettoken`、`/cgi-bin/user/get`、`/cgi-bin/message/send`）、按租户路由的微信客服回调 `/webhooks/wechat-kf/{tenant_key}`、健康检查，并启动 sync/delivery worker；启动时回收中断的投递和发送。配置缺失或无效时进程直接退出，不会只起健康检查。
 - 已实现：先写 outbox 再发送、代际/接管栅栏、官方接待状态、48h/5 条窗口与预算、70006/70007/70008 区分、分块逐块记录；客户正文与拉取 token 落库加密；CompatMsgId 持久序列；origin 过滤；常量时间比较；令牌数量上限；企业/绑定/客户身份字段不可变（数据库触发器）；发送全程按代际、接管栅栏、绑定 active/revision 做条件更新与逐块复核；单实例文件锁；回调按目标主机名绑定其 CIDR。
-- 未实现/未验证：管理后台、Windows 服务、真实企业微信全链路联调、对账任务（DELIVERY_UNKNOWN/UNKNOWN 只停在待核查）、`service_state_map` 需在测试企业中按官方取值配置。
-- 质量门禁：本地 `go build ./...`、`go vet ./...`、`go test -race ./...` 通过；严格覆盖率门禁（>95%，`-coverpkg=./...`）本地通过：总计约 96.5%，各包 root 96.9% / runtime 97.6% / state 95.3% / wecom 96.3% / cmd 100%（state 余量较小）。不得据此宣称已完成生产联调。
+- 管理后台（docs/17）：独立监听（默认 `127.0.0.1:8091`，配置 `admin`，未配置则不启动），仅单企业；bcrypt 密码哈希从环境变量读取（如 `htpasswd -bnBC 12 "" '<密码>' | tr -d ':\n'`）；服务端会话（HttpOnly/Secure/SameSite=Strict/Path=/admin，重启失效、数量上限）、CSRF + Origin/Referer 校验、危险操作二次认证、Idempotency-Key + revision 409、审计。已实现概览、客服账号（同步/新建/改名/备注/官方链接/一次性票据删除，响应丢失记 UNKNOWN）、转发绑定（新建/启停/改绑并全部客户换代/凭证轮换/一次性导出/回调挑战验证）、客户转人工与恢复（新代际）、消息诊断（默认不显示正文，查看正文需二次认证并审计，只能标记不能重发）、系统设置（只读+连接测试）、操作审计。差异与未做项见 docs/REVIEW_FIXES.md“管理后台”。
+- 未实现/未验证：管理后台未经真实企业联调（账号增删改、链接、接管/恢复）、系统设置在线保存、头像上传、Windows 服务、真实企业微信全链路联调、对账任务（DELIVERY_UNKNOWN/UNKNOWN 只停在待核查）、`service_state_map` 需在测试企业中按官方取值配置。
+- 质量门禁：本地 `go build ./...`、`go vet ./...`、`go test -race ./...` 通过；严格覆盖率门禁（>95%，`-coverpkg=./...`）本地通过：总计约 96.0%，各包 root 97.3% / admin 95.8% / runtime 95.7% / state 95.6% / wecom 96.3% / cmd 100%（admin/state/runtime 余量较小）。不得据此宣称已完成生产联调。
 
