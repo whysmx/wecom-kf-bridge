@@ -76,10 +76,14 @@ jobs:
           pattern: release-*
           path: dist
           merge-multiple: true
+      - name: Extract release notes from CHANGELOG
+        run: scripts/release_notes.sh "${GITHUB_REF_NAME}" > release-notes.md
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body_path: release-notes.md
           files: |
             dist/**/*.tar.gz
             dist/**/*.zip

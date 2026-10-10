@@ -76,3 +76,10 @@ HTTP 回调 200 不代表 AI 已处理；客户端会过滤早于本次进程启
 - 未实现/未验证：管理后台未经真实企业联调（账号增删改、链接、接管/恢复）、系统设置在线保存、头像上传、Windows 服务、真实企业微信全链路联调、对账任务（DELIVERY_UNKNOWN/UNKNOWN 只停在待核查）、`service_state_map` 需在测试企业中按官方取值配置。
 - 质量门禁：本地 `go build ./...`、`go vet ./...`、`go test -race ./...` 通过；严格覆盖率门禁（>95%，`-coverpkg=./...`）本地通过：总计约 96.0%，各包 root 97.3% / admin 95.8% / runtime 95.7% / state 95.6% / wecom 96.3% / cmd 100%（admin/state/runtime 余量较小）。不得据此宣称已完成生产联调。
 
+
+## 发布流程
+
+1. 在 `CHANGELOG.md` 新增 `## vX.Y.Z - YYYY-MM-DD` 小节（中文，Keep a Changelog 分类），并更新 `VERSION`。
+2. 本地 `scripts/release_notes.sh vX.Y.Z` 确认能提取说明；提交并推送 main，等待 CI 通过。
+3. 在该提交上创建附注标签并推送：`git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z`。
+4. `release` 工作流自动构建六个平台包，并以 CHANGELOG 对应小节作为说明发布 GitHub Release；缺少小节时发布失败。不要再手动 `gh release create`，以免重复。
