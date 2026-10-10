@@ -61,6 +61,7 @@ HTTP 回调 200 不代表 AI 已处理；客户端会过滤早于本次进程启
 | [验收矩阵](docs/13-acceptance-matrix.md) / [兼容边界验收](docs/15-feasibility-review.md) | AT-001～AT-070，当前均待执行 |
 | [部署运维](docs/12-deployment-runbook.md) | 网络、问答配置、Windows 与故障处理 |
 | [依据登记](docs/14-sources-and-verification.md) / [技术评审](docs/15-feasibility-review.md) | 固定来源、结论及未完成项 |
+| [单企业管理后台](docs/17-single-enterprise-admin-design.md) | 单企业后台页面、路由、鉴权与分期 |
 | [架构决策](docs/adr/0001-design-baseline.md) | 唯一现行实现基线与取舍 |
 | [Agent 实现手册](docs/16-agent-implementation-playbook.md) | 防止实现偏移、日志和测试门禁 |
 | [任务模板](docs/templates/task-brief.md) / [测试报告](docs/templates/test-report.md) | 可按实际任务简短填写，不编造结果 |
