@@ -266,14 +266,14 @@ func (d *DeliveryWorker) deliver(ctx context.Context, m state.InboxMessage) bool
 		step(state.InboxHeld, "customer_not_eligible")
 		return true
 	}
-	target := d.CallbackURL[m.BindingID]
-	if target == "" {
-		step(state.InboxHeld, "no_callback_url")
-		return true
-	}
 	if m.CreateTime.IsZero() {
 		// Never substitute the current time or 0 (docs/03 §6).
 		step(state.InboxHeld, "missing_create_time")
+		return true
+	}
+	target := d.CallbackURL[m.BindingID]
+	if target == "" {
+		step(state.InboxHeld, "no_callback_url")
 		return true
 	}
 	cb, err := d.Server.BuildCallback(m.BindingID, bridge.InboundMessage{FromUserName: c.UID, CreateTime: m.CreateTime.Unix(), MsgType: "text", Content: m.PayloadRef, MsgID: fmt.Sprint(m.CompatMsgID), AgentID: d.AgentID[m.BindingID]})

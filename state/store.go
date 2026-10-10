@@ -943,7 +943,7 @@ func (s *Store) TransitionInbox(ctx context.Context, id int64, to string, errCat
 	if !allowedInbox(m.State, to) {
 		return m, fmt.Errorf("%w: inbox %s -> %s", ErrInvalidState, m.State, to)
 	}
-	r, e := s.db.ExecContext(ctx, `UPDATE inbox SET state=?,error_category=?,attempt=attempt+1,updated_at=? WHERE id=?`, to, errCategory, unix(s.now()), id)
+	r, e := s.db.ExecContext(ctx, `UPDATE inbox SET state=?,error_category=?,attempt=attempt+CASE WHEN ?='POSTING' THEN 1 ELSE 0 END,updated_at=? WHERE id=?`, to, errCategory, to, unix(s.now()), id)
 	if e != nil {
 		return m, e
 	}
