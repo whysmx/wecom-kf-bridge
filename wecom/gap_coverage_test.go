@@ -13,7 +13,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-
 )
 
 // errReader is used to exercise response/body I/O failures without relying on
@@ -114,9 +113,6 @@ func TestCryptoCoverageGapBranches(t *testing.T) {
 		t.Fatal("expected invalid plaintext UTF-8 error")
 	}
 }
-
-
-
 
 type failingBody struct{}
 

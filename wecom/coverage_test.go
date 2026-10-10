@@ -22,7 +22,6 @@ type testLogger struct{ n atomic.Int32 }
 
 func (l *testLogger) Log(string, map[string]any) { l.n.Add(1) }
 
-
 func validKeyString() string {
 	return strings.TrimRight(base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{3}, 32)), "=")
 }

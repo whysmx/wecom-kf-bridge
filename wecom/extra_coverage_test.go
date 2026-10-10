@@ -182,11 +182,6 @@ func (failingRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
 	return nil, errors.New("transport")
 }
 
-
-
-
-
-
 func TestCustomerProfilesWithStateStore(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {

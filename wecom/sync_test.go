@@ -18,7 +18,11 @@ type syncLog struct {
 	events []string
 }
 
-func (l *syncLog) Log(e string, _ map[string]any) { l.mu.Lock(); l.events = append(l.events, e); l.mu.Unlock() }
+func (l *syncLog) Log(e string, _ map[string]any) {
+	l.mu.Lock()
+	l.events = append(l.events, e)
+	l.mu.Unlock()
+}
 func (l *syncLog) has(e string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()

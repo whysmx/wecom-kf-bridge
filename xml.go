@@ -19,7 +19,6 @@ type InboundMessage struct {
 	EventKey     string   `xml:"EventKey,omitempty"`
 	MediaID      string   `xml:"MediaId,omitempty"`
 	Format       string   `xml:"Format,omitempty"`
-	RawXML       string   `xml:"-"`
 }
 
 type callbackXML struct {
@@ -59,7 +58,6 @@ func unmarshalInbound(b []byte) (InboundMessage, error) {
 	if err := xml.Unmarshal(b, &m); err != nil {
 		return m, fmt.Errorf("bridge: decode callback XML: %w", err)
 	}
-	m.RawXML = string(b)
 	return m, nil
 }
 func marshalEnvelope(e CallbackEnvelope) ([]byte, error) { return xml.Marshal(e) }

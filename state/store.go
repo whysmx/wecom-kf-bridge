@@ -168,8 +168,8 @@ type OutboxMessage struct {
 // locks only protect state decisions for one scope/customer. No network call
 // should be made while a lock is held.
 type Store struct {
-	db    *sql.DB
-	now   func() time.Time
+	db     *sql.DB
+	now    func() time.Time
 	uid    func() (string, error)
 	locks  keyedLocks
 	sealer *Sealer
@@ -497,6 +497,7 @@ func (s *Store) Scope(ctx context.Context, id string) (SyncScope, error) {
 	}
 	return x, err
 }
+
 // SetSyncState records a visible scope status (READY, STALLED, PAGE_LIMIT,
 // PAUSED_MISSING_MSGID, ...) for operators.
 func (s *Store) SetSyncState(ctx context.Context, id, st string) error {
@@ -553,6 +554,7 @@ func (s *Store) EnsureCustomer(ctx context.Context, enterpriseID, bindingID, ext
 	}
 	return s.Customer(ctx, id)
 }
+
 const customerCols = `id,enterprise_id,binding_id,external_user_id,generation,uid,nickname,nickname_updated_at,official_status,state,fence_generation,revision,created_at,updated_at,authorized,last_inbound_at,window_used`
 
 func scanCustomer(row interface{ Scan(...any) error }) (Customer, error) {

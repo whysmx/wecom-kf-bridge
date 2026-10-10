@@ -59,5 +59,9 @@ func (w *Webhook) BuildClientCallback(msg ClientMessage, timestamp, nonce string
 	if nonce == "" {
 		nonce = strconv.FormatInt(now.UnixNano(), 10)
 	}
-	return SignedCallback{Body: []byte("<xml><ToUserName><![CDATA[" + w.Receiver + "]]></ToUserName><AgentID><![CDATA[" + msg.AgentID + "]]></AgentID><Encrypt><![CDATA[" + enc + "]]></Encrypt></xml>"), Signature: w.Signature(timestamp, nonce, enc), Timestamp: timestamp, Nonce: nonce}, nil
+	body, err := marshalEnvelope(w.Receiver, msg.AgentID, enc)
+	if err != nil {
+		return SignedCallback{}, err
+	}
+	return SignedCallback{Body: body, Signature: w.Signature(timestamp, nonce, enc), Timestamp: timestamp, Nonce: nonce}, nil
 }

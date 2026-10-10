@@ -46,6 +46,7 @@ func Signature(token, timestamp, nonce, encrypted string) string {
 	h := sha1.Sum([]byte(strings.Join(v, "")))
 	return hex.EncodeToString(h[:])
 }
+
 // VerifySignature compares in constant time. Signatures are lowercase hex;
 // uppercase input is normalised before the comparison.
 func VerifySignature(token, timestamp, nonce, encrypted, sig string) bool {
@@ -88,6 +89,7 @@ func EncryptWithRand(key []byte, message, receiver string, rnd io.Reader) (strin
 	cipher.NewCBCEncrypter(block, key[:aes.BlockSize]).CryptBlocks(out, padded)
 	return base64.StdEncoding.EncodeToString(out), nil
 }
+
 // Decrypt requires a non-empty expected receiver: skipping the receiver
 // check would accept payloads encrypted for another corp/binding.
 func Decrypt(key []byte, encoded, receiver string) (string, error) {

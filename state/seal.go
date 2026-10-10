@@ -1,6 +1,7 @@
 package state
 
 import (
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -8,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"time"
 )
 
 // ErrNoSealer is returned when sensitive content (customer message bodies,
@@ -92,4 +94,34 @@ func (st *Store) openField(v, aad string) (string, error) {
 		return "", ErrNoSealer
 	}
 	return st.sealer.open(v, aad)
+}
+
+// SaveSyncToken stores the callback pull token sealed, with its expiry, and
+// marks the scope pending in the same statement (docs/04 §3).
+func (s *Store) SaveSyncToken(ctx context.Context, scopeID, token string, expiresAt time.Time) error {
+	if scopeID == "" {
+		return ErrInvalidID
+	}
+	sealed, err := s.sealField(token, "sync.token:"+scopeID)
+	if err != nil {
+		return err
+	}
+	r, err := s.db.ExecContext(ctx, `UPDATE sync_scopes SET sync_token=?,sync_token_expires_at=?,pending=1,updated_at=? WHERE id=?`, sealed, unix(expiresAt), unix(s.now()), scopeID)
+	if err != nil {
+		return err
+	}
+	return rowsOrNotFound(r)
+}
+
+// SyncToken returns the unexpired pull token for a scope, or "".
+func (s *Store) SyncToken(ctx context.Context, scopeID string) (string, error) {
+	var v string
+	var exp int64
+	if err := s.db.QueryRowContext(ctx, `SELECT sync_token,sync_token_expires_at FROM sync_scopes WHERE id=?`, scopeID).Scan(&v, &exp); err != nil {
+		return "", mapNotFound(err)
+	}
+	if v == "" || (exp != 0 && !s.now().Before(timeFrom(exp))) {
+		return "", nil
+	}
+	return s.openField(v, "sync.token:"+scopeID)
 }

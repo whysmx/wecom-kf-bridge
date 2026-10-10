@@ -1,7 +1,6 @@
 package wecom
 
 import (
-	"bytes"
 	"context"
 	"encoding/xml"
 	"fmt"
@@ -31,10 +30,26 @@ type Notification struct {
 	MsgType      string   `xml:"MsgType"`
 	Event        string   `xml:"Event"`
 	ChangeType   string   `xml:"ChangeType"`
-	Token        string   `xml:"Token"`
-	OpenKfID     string   `xml:"OpenKfId"`
-	RawXML       string   `xml:"-"`
+	// Token is the short-lived sync_msg pull token. It is a secret: it is
+	// never logged, never serialised to JSON, and must only be persisted
+	// sealed (state.Store.SaveSyncToken). The decrypted inner XML is not
+	// retained at all.
+	Token    string `xml:"Token" json:"-"`
+	OpenKfID string `xml:"OpenKfId"`
 }
+
+// LogFields returns a redacted view safe for structured logs.
+func (n Notification) LogFields() map[string]any {
+	return map[string]any{"msg_type": n.MsgType, "event": n.Event, "open_kfid": n.OpenKfID, "has_token": n.Token != "", "create_time": n.CreateTime}
+}
+
+// String never prints the pull token.
+func (n Notification) String() string {
+	return fmt.Sprintf("Notification{MsgType:%s Event:%s OpenKfID:%s Token:[REDACTED]}", n.MsgType, n.Event, n.OpenKfID)
+}
+
+// GoString keeps %#v from leaking the token too.
+func (n Notification) GoString() string { return n.String() }
 
 type Webhook struct {
 	Token          string
@@ -98,7 +113,6 @@ func (w *Webhook) DecodeNotification(signature, timestamp, nonce string, body []
 	if err := xml.Unmarshal([]byte(inner), &n); err != nil {
 		return Notification{}, fmt.Errorf("decode callback notification: %w", err)
 	}
-	n.RawXML = inner
 	return n, nil
 }
 
@@ -166,19 +180,26 @@ func (w *Webhook) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 }
 
+// outerEnvelope is marshalled with encoding/xml so every field is escaped;
+// no value is ever concatenated into markup (a "]]>" cannot break out).
+type outerEnvelope struct {
+	XMLName    xml.Name `xml:"xml"`
+	ToUserName string   `xml:"ToUserName"`
+	AgentID    string   `xml:"AgentID,omitempty"`
+	Encrypt    string   `xml:"Encrypt"`
+}
+
+func marshalEnvelope(to, agentID, enc string) ([]byte, error) {
+	return xml.Marshal(outerEnvelope{ToUserName: to, AgentID: agentID, Encrypt: enc})
+}
+
 // BuildCallbackBody wraps encrypted XML in the canonical outer envelope.
 func (w *Webhook) BuildCallbackBody(innerXML string) ([]byte, error) {
 	enc, err := Encrypt(w.AESKey, innerXML, w.Receiver)
 	if err != nil {
 		return nil, err
 	}
-	var b bytes.Buffer
-	b.WriteString("<xml><ToUserName><![CDATA[")
-	b.WriteString(w.Receiver)
-	b.WriteString("]]></ToUserName><Encrypt><![CDATA[")
-	b.WriteString(enc)
-	b.WriteString("]]></Encrypt></xml>")
-	return b.Bytes(), nil
+	return marshalEnvelope(w.Receiver, "", enc)
 }
 func (w *Webhook) Signature(timestamp, nonce, encrypted string) string {
 	return Signature(w.Token, timestamp, nonce, encrypted)
