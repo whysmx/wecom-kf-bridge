@@ -613,7 +613,7 @@ func seedMessages(t *testing.T, e *env) (int64, string) {
 	must(t, e.st.EnsureScope(ctx, "s1", "b1"))
 	_, err := e.st.CommitSyncPage(ctx, "s1", "n1", false, []state.InboxMessage{{BindingID: "b1", ExternalMsgID: "m1", CustomerID: e.cust.ID, Generation: e.cust.Generation, Type: "text", PayloadRef: "客户机密正文"}})
 	must(t, err)
-	in, _ := e.st.InboxByStates(ctx, "", nil, 1)
+	in, _ := e.st.InboxByStates(ctx, "e1", "", nil, 1)
 	for _, to := range []string{state.InboxClassified, state.InboxReady, state.InboxPosting, state.InboxDeliveryUnknown} {
 		_, err = e.st.TransitionInbox(ctx, in[0].ID, to, "timeout")
 		must(t, err)
@@ -779,7 +779,10 @@ func TestWriteFailuresAreReported(t *testing.T) {
 	must(t, e.st.EnsureScope(ctx, "s9", "other"))
 	other, _ := e.st.EnsureCustomer(ctx, "e2", "other", "ext-o")
 	e.st.CommitSyncPage(ctx, "s9", "n", false, []state.InboxMessage{{BindingID: "other", ExternalMsgID: "x1", CustomerID: other.ID, Type: "text", PayloadRef: "别家正文"}, {BindingID: "other", ExternalMsgID: "x2", Type: "event"}})
-	in, _ := e.st.InboxByStates(ctx, "", nil, 10)
+	in, _ := e.st.InboxByStates(ctx, "e2", "", nil, 10)
+	if len(in) != 2 {
+		t.Fatal("foreign rows not seeded")
+	}
 	for _, m := range in {
 		if m.BindingID == "other" {
 			if w := cl.post("/admin/diagnostics/inbox/"+itoa64(m.ID)+"/view", nil); w.Code != http.StatusNotFound {

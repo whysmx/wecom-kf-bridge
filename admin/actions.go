@@ -514,6 +514,13 @@ func (c *Console) diagMark(r *http.Request, _ *session) result {
 	if (kind != "inbox" && kind != "outbox") || (note != "已人工核实" && note != "关闭诊断项") || !idPattern.MatchString(id) {
 		return bad("诊断标记无效")
 	}
+	owner, err := c.cfg.Store.DiagnosticEnterprise(r.Context(), kind, id)
+	if errors.Is(err, state.ErrNotFound) || (err == nil && owner != c.cfg.EnterpriseID) {
+		return result{status: http.StatusNotFound, flash: "诊断项不存在"}
+	}
+	if err != nil {
+		return result{status: http.StatusServiceUnavailable, flash: "存储不可用"}
+	}
 	if err := c.cfg.Store.MarkDiagnostic(r.Context(), kind, id, note); err != nil {
 		return result{status: http.StatusServiceUnavailable, flash: "存储不可用"}
 	}

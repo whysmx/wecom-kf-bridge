@@ -182,18 +182,18 @@ func TestDiagnosticsListsAndOverview(t *testing.T) {
 	o, _ := s.CreateOutbox(ctx, OutboxMessage{CustomerID: c.ID, Generation: c.Generation, UID: c.UID, Body: "答", BudgetUnits: 1})
 	s.MarkOutboxSending(ctx, o.ID)
 	s.MarkOutboxUnknown(ctx, o.ID, "x")
-	in, err := s.InboxByStates(ctx, "", []string{InboxReceived}, 10)
+	in, err := s.InboxByStates(ctx, "e1", "", []string{InboxReceived}, 10)
 	if err != nil || len(in) != 1 {
 		t.Fatal(in, err)
 	}
-	if in, _ := s.InboxByStates(ctx, c.ID, nil, 10); len(in) != 1 {
+	if in, _ := s.InboxByStates(ctx, "e1", c.ID, nil, 10); len(in) != 1 {
 		t.Fatal("by customer")
 	}
-	out, err := s.OutboxByStates(ctx, c.ID, []string{OutboxUnknown}, 10)
+	out, err := s.OutboxByStates(ctx, "e1", c.ID, []string{OutboxUnknown}, 10)
 	if err != nil || len(out) != 1 {
 		t.Fatal(out, err)
 	}
-	if out, _ := s.OutboxByStates(ctx, "", nil, 10); len(out) != 1 {
+	if out, _ := s.OutboxByStates(ctx, "e1", "", nil, 10); len(out) != 1 {
 		t.Fatal("all")
 	}
 	if err := s.MarkDiagnostic(ctx, "outbox", o.ID, "已人工核实"); err != nil {
@@ -221,11 +221,11 @@ func TestDiagnosticsListsAndOverview(t *testing.T) {
 		t.Fatal(ov, err)
 	}
 	s.DB().Exec(`UPDATE inbox SET payload_ref='tampered'`)
-	if _, err := s.InboxByStates(ctx, "", nil, 10); err == nil {
+	if _, err := s.InboxByStates(ctx, "e1", "", nil, 10); err == nil {
 		t.Fatal("tampered inbox")
 	}
 	s.DB().Exec(`UPDATE outbox SET body='tampered'`)
-	if _, err := s.OutboxByStates(ctx, "", nil, 10); err == nil {
+	if _, err := s.OutboxByStates(ctx, "e1", "", nil, 10); err == nil {
 		t.Fatal("tampered outbox")
 	}
 }
@@ -239,8 +239,8 @@ func TestAdminQueriesOnClosedStore(t *testing.T) {
 	add(s.BeginOperation(ctx, "k", "h"))
 	add(s.ExportBindingSecret(ctx, "b1"))
 	add(s.DiagnosticMarks(ctx, "a"))
-	add(s.InboxByStates(ctx, "", nil, 1))
-	add(s.OutboxByStates(ctx, "", nil, 1))
+	add(s.InboxByStates(ctx, "e1", "", nil, 1))
+	add(s.OutboxByStates(ctx, "e1", "", nil, 1))
 	add(s.Customers(ctx, "", 1))
 	add(s.Bindings(ctx))
 	add(s.Overview(ctx))

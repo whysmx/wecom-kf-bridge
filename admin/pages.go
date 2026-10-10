@@ -105,8 +105,8 @@ func (c *Console) customersPage(w http.ResponseWriter, r *http.Request, s *sessi
 	}
 	data := map[string]any{"Customers": mine, "Q": q}
 	if r.URL.Query().Get("detail") == "1" && len(mine) == 1 {
-		in, err1 := c.cfg.Store.InboxByStates(r.Context(), mine[0].ID, nil, 20)
-		out, err2 := c.cfg.Store.OutboxByStates(r.Context(), mine[0].ID, nil, 20)
+		in, err1 := c.cfg.Store.InboxByStates(r.Context(), c.cfg.EnterpriseID, mine[0].ID, nil, 20)
+		out, err2 := c.cfg.Store.OutboxByStates(r.Context(), c.cfg.EnterpriseID, mine[0].ID, nil, 20)
 		if err1 != nil || err2 != nil {
 			storeErr(w)
 			return
@@ -139,7 +139,7 @@ func (c *Console) diagnosticsPage(w http.ResponseWriter, r *http.Request, s *ses
 		return
 	}
 	if view != "outbox" {
-		in, err := c.cfg.Store.InboxByStates(ctx, "", inboxFocus, 100)
+		in, err := c.cfg.Store.InboxByStates(ctx, c.cfg.EnterpriseID, "", inboxFocus, 100)
 		if err != nil {
 			storeErr(w)
 			return
@@ -153,7 +153,7 @@ func (c *Console) diagnosticsPage(w http.ResponseWriter, r *http.Request, s *ses
 		}
 	}
 	if view != "inbox" {
-		out, err := c.cfg.Store.OutboxByStates(ctx, "", outboxFocus, 100)
+		out, err := c.cfg.Store.OutboxByStates(ctx, c.cfg.EnterpriseID, "", outboxFocus, 100)
 		if err != nil {
 			storeErr(w)
 			return

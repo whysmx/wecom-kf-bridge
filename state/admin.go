@@ -314,6 +314,26 @@ func (s *Store) MarkDiagnostic(ctx context.Context, objType, objID, note string)
 	return err
 }
 
+// DiagnosticEnterprise returns the enterprise owning an inbox/outbox row,
+// ErrNotFound if the row does not exist (#39).
+func (s *Store) DiagnosticEnterprise(ctx context.Context, objType, objID string) (string, error) {
+	var q string
+	switch objType {
+	case "inbox":
+		q = `SELECT b.enterprise_id FROM inbox i JOIN bindings b ON b.id=i.binding_id WHERE CAST(i.id AS TEXT)=?`
+	case "outbox":
+		q = `SELECT b.enterprise_id FROM outbox o JOIN bindings b ON b.id=o.binding_id WHERE o.id=?`
+	default:
+		return "", ErrInvalidID
+	}
+	var e string
+	err := s.db.QueryRowContext(ctx, q, objID).Scan(&e)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return e, err
+}
+
 func (s *Store) DiagnosticMarks(ctx context.Context, objType string) (map[string]string, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT object_id,note FROM diag_marks WHERE object_type=?`, objType)
 	pairs, err := collect(rows, err, func(r *sql.Rows) ([2]string, error) {
@@ -356,9 +376,10 @@ func toArgs(v []string) []any {
 
 // InboxByStates lists inbox rows (newest first). Payloads are decrypted by
 // the scanner; callers must not render them without step-up.
-func (s *Store) InboxByStates(ctx context.Context, customerID string, states []string, limit int) ([]InboxMessage, error) {
-	q := inboxSelect() + ` WHERE (?='' OR customer_id=?)`
-	args := []any{customerID, customerID}
+// InboxByStates is always scoped to one enterprise (#39).
+func (s *Store) InboxByStates(ctx context.Context, enterpriseID, customerID string, states []string, limit int) ([]InboxMessage, error) {
+	q := inboxSelect() + ` WHERE binding_id IN (SELECT id FROM bindings WHERE enterprise_id=?) AND (?='' OR customer_id=?)`
+	args := []any{enterpriseID, customerID, customerID}
 	if len(states) > 0 {
 		q += ` AND state IN (` + placeholders(len(states)) + `)`
 		args = append(args, toArgs(states)...)
@@ -367,9 +388,10 @@ func (s *Store) InboxByStates(ctx context.Context, customerID string, states []s
 	return collect(rows, err, func(r *sql.Rows) (InboxMessage, error) { return s.openInbox(scanInbox(r)) })
 }
 
-func (s *Store) OutboxByStates(ctx context.Context, customerID string, states []string, limit int) ([]OutboxMessage, error) {
-	q := outboxSelect() + ` WHERE (?='' OR customer_id=?)`
-	args := []any{customerID, customerID}
+// OutboxByStates is always scoped to one enterprise (#39).
+func (s *Store) OutboxByStates(ctx context.Context, enterpriseID, customerID string, states []string, limit int) ([]OutboxMessage, error) {
+	q := outboxSelect() + ` WHERE binding_id IN (SELECT id FROM bindings WHERE enterprise_id=?) AND (?='' OR customer_id=?)`
+	args := []any{enterpriseID, customerID, customerID}
 	if len(states) > 0 {
 		q += ` AND state IN (` + placeholders(len(states)) + `)`
 		args = append(args, toArgs(states)...)
