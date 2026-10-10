@@ -165,7 +165,7 @@ func newEnv(t *testing.T, mut ...func(*Config)) *env {
 	e := &env{t: t, st: st, kf: &fakeKF{listErr: map[int]error{}, states: map[string]int{}}, rt: &fakeRuntime{}, now: time.Unix(1_800_000_000, 0), cust: cu}
 	cfg := Config{Store: st, KF: e.kf, Runtime: e.rt, PasswordHash: hash, Origin: origin, EnterpriseID: "e1", CompanyName: "测试企业", CorpID: "ww1234567890", Clock: e.clock,
 		ServiceStateMap: map[int]string{1: state.CustomerAIEligible, 2: state.CustomerWaitingHuman, 3: state.CustomerHuman},
-		Settings: []Setting{{"企业", "Secret 环境变量", "WECOM_SECRET"}}}
+		Settings:        []Setting{{"企业", "Secret 环境变量", "WECOM_SECRET"}}}
 	for _, m := range mut {
 		m(&cfg)
 	}
