@@ -32,6 +32,11 @@ var (
 	ErrBindingInactive = errors.New("state: binding inactive or revision changed")
 	ErrWindowClosed    = errors.New("state: send window closed")
 	ErrBudgetExceeded  = errors.New("state: send budget exhausted")
+	// ErrIdentityChanged: an existing enterprise/binding/customer ID was
+	// reused with different identity columns. Use a new ID (or an explicit
+	// migration) instead; silently re-pointing existing customers would
+	// route them to another tenant or kf account.
+	ErrIdentityChanged = errors.New("state: immutable identity changed for existing id")
 )
 
 // Delivery and handover states are strings in SQLite intentionally.  This
@@ -337,12 +342,36 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		{"outbox", "chunks_sent", "INTEGER NOT NULL DEFAULT 0"},
 		{"sync_scopes", "sync_token", "TEXT NOT NULL DEFAULT ''"},
 		{"sync_scopes", "sync_token_expires_at", "INTEGER NOT NULL DEFAULT 0"},
+		{"outbox", "binding_revision", "INTEGER NOT NULL DEFAULT 0"},
 	} {
 		if err := addColumn(ctx, db, c.table, c.col, c.def); err != nil {
 			return err
 		}
 	}
+	// Identity columns are immutable at the database level, whatever code
+	// path issues the UPDATE.
+	for _, t := range []struct{ table, cols string }{
+		{"enterprises", "tenant_id,corp_id"},
+		{"bindings", "enterprise_id,open_kfid"},
+		{"customers", "enterprise_id,binding_id,external_user_id"},
+	} {
+		var cond []string
+		for _, c := range strings.Split(t.cols, ",") {
+			cond = append(cond, "NEW."+c+" IS NOT OLD."+c)
+		}
+		q := `CREATE TRIGGER IF NOT EXISTS immutable_` + t.table + ` BEFORE UPDATE OF ` + t.cols + ` ON ` + t.table + ` WHEN ` + strings.Join(cond, " OR ") + ` BEGIN SELECT RAISE(ABORT,'immutable identity'); END`
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			return fmt.Errorf("state migration: %w", err)
+		}
+	}
 	return nil
+}
+
+func identityErr(err error) error {
+	if err != nil && strings.Contains(err.Error(), "immutable identity") {
+		return ErrIdentityChanged
+	}
+	return err
 }
 
 func addColumn(ctx context.Context, db *sql.DB, table, col, def string) error {
@@ -440,9 +469,14 @@ func (s *Store) PutEnterprise(ctx context.Context, e Enterprise) error {
 	if e.Status == "" {
 		e.Status = "ACTIVE"
 	}
+	if old, err := s.Enterprise(ctx, e.ID); err == nil && (old.TenantID != e.TenantID || old.CorpID != e.CorpID) {
+		return fmt.Errorf("%w: enterprise %s", ErrIdentityChanged, e.ID)
+	} else if err != nil && !errors.Is(err, ErrNotFound) {
+		return err
+	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO enterprises(id,tenant_id,corp_id,credential_ref,status,revision,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)
 	 ON CONFLICT(id) DO UPDATE SET tenant_id=excluded.tenant_id,corp_id=excluded.corp_id,credential_ref=excluded.credential_ref,status=excluded.status,revision=excluded.revision,updated_at=excluded.updated_at`, e.ID, e.TenantID, e.CorpID, e.CredentialRef, e.Status, e.Revision, unix(e.CreatedAt), unix(e.UpdatedAt))
-	return err
+	return identityErr(err)
 }
 func scanEnterprise(row interface{ Scan(...any) error }) (Enterprise, error) {
 	var e Enterprise
@@ -478,8 +512,15 @@ func (s *Store) PutBinding(ctx context.Context, b Binding) error {
 	if b.Active {
 		active = 1
 	}
+	// Serialises with in-flight guarded chunk sends of this binding (#25).
+	defer s.lock("binding:" + b.ID)()
+	if old, err := s.Binding(ctx, b.ID); err == nil && (old.EnterpriseID != b.EnterpriseID || old.OpenKfID != b.OpenKfID) {
+		return fmt.Errorf("%w: binding %s", ErrIdentityChanged, b.ID)
+	} else if err != nil && !errors.Is(err, ErrNotFound) {
+		return err
+	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO bindings(id,enterprise_id,open_kfid,project_id,virtual_token_hash,callback_url,active,revision,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET project_id=excluded.project_id,virtual_token_hash=excluded.virtual_token_hash,callback_url=excluded.callback_url,active=excluded.active,revision=excluded.revision,updated_at=excluded.updated_at`, b.ID, b.EnterpriseID, b.OpenKfID, b.ProjectID, b.VirtualTokenHash, b.CallbackURL, active, b.Revision, unix(b.CreatedAt), unix(b.UpdatedAt))
-	return err
+	return identityErr(err)
 }
 func scanBinding(row interface{ Scan(...any) error }) (Binding, error) {
 	var b Binding
@@ -943,11 +984,11 @@ func (s *Store) TransitionInbox(ctx context.Context, id int64, to string, errCat
 	if !allowedInbox(m.State, to) {
 		return m, fmt.Errorf("%w: inbox %s -> %s", ErrInvalidState, m.State, to)
 	}
-	r, e := s.db.ExecContext(ctx, `UPDATE inbox SET state=?,error_category=?,attempt=attempt+CASE WHEN ?='POSTING' THEN 1 ELSE 0 END,updated_at=? WHERE id=?`, to, errCategory, to, unix(s.now()), id)
+	r, e := s.db.ExecContext(ctx, `UPDATE inbox SET state=?,error_category=?,attempt=attempt+CASE WHEN ?='POSTING' THEN 1 ELSE 0 END,updated_at=? WHERE id=? AND state=?`, to, errCategory, to, unix(s.now()), id, m.State)
 	if e != nil {
 		return m, e
 	}
-	if e = rowsOrNotFound(r); e != nil {
+	if e = casApplied(r); e != nil {
 		return m, e
 	}
 	return s.Inbox(ctx, id)
@@ -1005,6 +1046,16 @@ func (s *Store) CreateOutbox(ctx context.Context, o OutboxMessage) (OutboxMessag
 	if err != nil {
 		return OutboxMessage{}, err
 	}
+	// The binding revision the request was admitted under; every later
+	// send step re-checks it (#25).
+	var rev int64
+	if err = tx.QueryRowContext(ctx, `SELECT revision FROM bindings WHERE id=?`, c.BindingID).Scan(&rev); err != nil {
+		return OutboxMessage{}, err
+	}
+	if o.BindingRevision > 0 {
+		rev = o.BindingRevision
+	}
+	o.BindingRevision = rev
 	if o.ID == "" {
 		if o.ID, err = randomID("out_"); err != nil {
 			return OutboxMessage{}, err
@@ -1032,7 +1083,7 @@ func (s *Store) CreateOutbox(ctx context.Context, o OutboxMessage) (OutboxMessag
 	if reject != nil && o.UID != "" {
 		gen, uid = o.Generation, o.UID
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO outbox(id,binding_id,customer_id,generation,uid,body,content_ref,state,budget_units,budget_reserved,attempt,error_category,external_msg_id,created_at,updated_at,chunks_total) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, o.ID, c.BindingID, c.ID, gen, uid, sealedBody, o.ContentRef, o.State, o.BudgetUnits, reserved, o.Attempt, o.ErrorCategory, o.ExternalMsgID, unix(now), unix(now), o.ChunksTotal); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO outbox(id,binding_id,customer_id,generation,uid,body,content_ref,state,budget_units,budget_reserved,attempt,error_category,external_msg_id,created_at,updated_at,chunks_total,binding_revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, o.ID, c.BindingID, c.ID, gen, uid, sealedBody, o.ContentRef, o.State, o.BudgetUnits, reserved, o.Attempt, o.ErrorCategory, o.ExternalMsgID, unix(now), unix(now), o.ChunksTotal, rev); err != nil {
 		return OutboxMessage{}, err
 	}
 	if err = tx.Commit(); err != nil {
@@ -1118,7 +1169,7 @@ func scanOutbox(row interface{ Scan(...any) error }) (OutboxMessage, error) {
 	var o OutboxMessage
 	var r int
 	var ifn, cat, uat int64
-	err := row.Scan(&o.ID, &o.BindingID, &o.CustomerID, &o.Generation, &o.UID, &o.Body, &o.ContentRef, &o.State, &o.BudgetUnits, &r, &o.Attempt, &o.ErrorCategory, &o.ExternalMsgID, &ifn, &cat, &uat, &o.ChunksTotal, &o.ChunksSent)
+	err := row.Scan(&o.ID, &o.BindingID, &o.CustomerID, &o.Generation, &o.UID, &o.Body, &o.ContentRef, &o.State, &o.BudgetUnits, &r, &o.Attempt, &o.ErrorCategory, &o.ExternalMsgID, &ifn, &cat, &uat, &o.ChunksTotal, &o.ChunksSent, &o.BindingRevision)
 	o.BudgetReserved = r != 0
 	o.InFlightAt = timeFrom(ifn)
 	o.CreatedAt = timeFrom(cat)
@@ -1126,7 +1177,7 @@ func scanOutbox(row interface{ Scan(...any) error }) (OutboxMessage, error) {
 	return o, err
 }
 func outboxSelect() string {
-	return `SELECT id,binding_id,customer_id,generation,uid,body,content_ref,state,budget_units,budget_reserved,attempt,error_category,external_msg_id,in_flight_at,created_at,updated_at,chunks_total,chunks_sent FROM outbox`
+	return `SELECT id,binding_id,customer_id,generation,uid,body,content_ref,state,budget_units,budget_reserved,attempt,error_category,external_msg_id,in_flight_at,created_at,updated_at,chunks_total,chunks_sent,binding_revision FROM outbox`
 }
 func (s *Store) Outbox(ctx context.Context, id string) (OutboxMessage, error) {
 	return s.openOutbox(scanOutbox(s.db.QueryRowContext(ctx, outboxSelect()+` WHERE id=?`, id)))
@@ -1141,7 +1192,27 @@ func (s *Store) openOutbox(o OutboxMessage, err error) (OutboxMessage, error) {
 	o.Body, err = s.openField(o.Body, "outbox.body")
 	return o, err
 }
+
+// sendable is the SQL condition under which an outbox row may (still) go
+// out: its customer generation/UID is current, the customer is AI-eligible
+// with no fence over this generation, and its binding is active at the
+// revision the row was admitted under.
+const sendable = `EXISTS(SELECT 1 FROM customers c WHERE c.id=outbox.customer_id AND c.generation=outbox.generation AND c.uid=outbox.uid AND c.state='AI_ELIGIBLE' AND c.fence_generation<=c.generation)
+ AND EXISTS(SELECT 1 FROM bindings b WHERE b.id=outbox.binding_id AND b.active=1 AND b.revision=outbox.binding_revision)`
+
+// MarkOutboxSending is a compare-and-set: the row enters SENDING only if,
+// in the same statement, it is still CREATED/VALIDATED and sendable. A
+// takeover, recovery or binding rotation racing with the caller makes it
+// fail with the precise reason (#25, #27).
 func (s *Store) MarkOutboxSending(ctx context.Context, id string) (OutboxMessage, error) {
+	now := unix(s.now())
+	r, err := s.db.ExecContext(ctx, `UPDATE outbox SET state='SENDING',attempt=attempt+1,in_flight_at=?,updated_at=? WHERE id=? AND state IN ('CREATED','VALIDATED') AND `+sendable, now, now, id)
+	if err != nil {
+		return OutboxMessage{}, err
+	}
+	if n, _ := r.RowsAffected(); n == 1 {
+		return s.Outbox(ctx, id)
+	}
 	o, err := s.Outbox(ctx, id)
 	if err != nil {
 		return o, err
@@ -1149,24 +1220,66 @@ func (s *Store) MarkOutboxSending(ctx context.Context, id string) (OutboxMessage
 	if o.State != OutboxCreated && o.State != OutboxValidated {
 		return o, fmt.Errorf("%w: outbox %s -> SENDING", ErrInvalidState, o.State)
 	}
+	return o, s.unsendableReason(ctx, o)
+}
+
+// casApplied reports ErrConflict when a compare-and-set UPDATE matched no
+// row because another writer changed it first.
+func casApplied(r sql.Result) error {
+	if n, err := r.RowsAffected(); err != nil || n != 1 {
+		return ErrConflict
+	}
+	return nil
+}
+
+func (s *Store) unsendableReason(ctx context.Context, o OutboxMessage) error {
 	c, err := s.Customer(ctx, o.CustomerID)
 	if err != nil {
-		return o, err
+		return err
 	}
 	if c.Generation != o.Generation || c.UID != o.UID {
-		return o, ErrStaleGeneration
+		return ErrStaleGeneration
 	}
-	if c.State != CustomerAIEligible {
-		return o, ErrHeld
+	if c.State != CustomerAIEligible || c.FenceGeneration > c.Generation {
+		return ErrHeld
 	}
-	r, err := s.db.ExecContext(ctx, `UPDATE outbox SET state=?,attempt=attempt+1,in_flight_at=?,updated_at=? WHERE id=?`, OutboxSending, unix(s.now()), unix(s.now()), id)
+	b, err := s.Binding(ctx, o.BindingID)
 	if err != nil {
-		return o, err
+		return err
 	}
-	if err = rowsOrNotFound(r); err != nil {
-		return o, err
+	if !b.Active || b.Revision != o.BindingRevision {
+		return ErrBindingInactive
 	}
-	return s.Outbox(ctx, id)
+	return ErrConflict
+}
+
+// SendGuarded runs one outbound call for a SENDING row. Under the binding
+// lock (which PutBinding also takes) it re-checks, as a conditional update,
+// that the row is still SENDING and sendable, then calls fn. A binding
+// rotation/disable or takeover therefore cannot interleave between the
+// check and the call within this process; across the check the database
+// condition is authoritative.
+func (s *Store) SendGuarded(ctx context.Context, id string, fn func() error) error {
+	o, err := s.Outbox(ctx, id)
+	if err != nil {
+		return err
+	}
+	defer s.lock("binding:" + o.BindingID)()
+	defer s.lock("customer:" + o.CustomerID)()
+	r, err := s.db.ExecContext(ctx, `UPDATE outbox SET updated_at=? WHERE id=? AND state='SENDING' AND `+sendable, unix(s.now()), id)
+	if err != nil {
+		return err
+	}
+	if n, _ := r.RowsAffected(); n != 1 {
+		if o, err = s.Outbox(ctx, id); err != nil {
+			return err
+		}
+		if o.State != OutboxSending {
+			return fmt.Errorf("%w: outbox is %s", ErrInvalidState, o.State)
+		}
+		return s.unsendableReason(ctx, o)
+	}
+	return fn()
 }
 func (s *Store) TransitionOutbox(ctx context.Context, id, to, errorCategory string) (OutboxMessage, error) {
 	if !validOutboxState(to) {
@@ -1179,11 +1292,12 @@ func (s *Store) TransitionOutbox(ctx context.Context, id, to, errorCategory stri
 	if !allowedOutbox(o.State, to) {
 		return o, fmt.Errorf("%w: outbox %s -> %s", ErrInvalidState, o.State, to)
 	}
-	r, err := s.db.ExecContext(ctx, `UPDATE outbox SET state=?,error_category=?,updated_at=? WHERE id=?`, to, errorCategory, unix(s.now()), id)
+	// compare-and-set on the state we validated (#27)
+	r, err := s.db.ExecContext(ctx, `UPDATE outbox SET state=?,error_category=?,updated_at=? WHERE id=? AND state=?`, to, errorCategory, unix(s.now()), id, o.State)
 	if err != nil {
 		return o, err
 	}
-	if err = rowsOrNotFound(r); err != nil {
+	if err = casApplied(r); err != nil {
 		return o, err
 	}
 	return s.Outbox(ctx, id)
@@ -1196,11 +1310,11 @@ func (s *Store) MarkOutboxUnknown(ctx context.Context, id, category string) (Out
 	if o.State != OutboxSending && o.State != OutboxValidated && o.State != OutboxCreated {
 		return o, ErrUnknownResult
 	}
-	r, err := s.db.ExecContext(ctx, `UPDATE outbox SET state=?,error_category=?,updated_at=? WHERE id=?`, OutboxUnknown, category, unix(s.now()), id)
+	r, err := s.db.ExecContext(ctx, `UPDATE outbox SET state=?,error_category=?,updated_at=? WHERE id=? AND state=?`, OutboxUnknown, category, unix(s.now()), id, o.State)
 	if err != nil {
 		return o, err
 	}
-	if err = rowsOrNotFound(r); err != nil {
+	if err = casApplied(r); err != nil {
 		return o, err
 	}
 	return s.Outbox(ctx, id)
