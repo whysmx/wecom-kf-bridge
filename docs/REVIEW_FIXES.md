@@ -64,27 +64,27 @@
 
 | 设计要求 | 实现 | 测试 | 提交 |
 |---|---|---|---|
-| §2 独立监听、不进 public listener | `AppConfig.AdminAddr/AdminHandler`、`App.ServeAdmin`；public mux 不挂 `/admin` | runtime `TestAppServesAdminSeparately`、`TestAdminConsoleEndToEnd`（public 上不可访问）；admin `TestUnauthenticatedAccessIsRejected`（后台不提供 /cgi-bin） | 866e21b |
-| §2 不信任 X-Forwarded-For | 审计操作者取 TCP 对端地址 | `TestLoginSessionCookieAndThrottle`（actor） | 1cd81c6 |
-| §3 七个页面、无企业选择器、顶部企业名/CorpID 掩码/状态/最近同步 | `admin/templates.go`、`pages.go`；`consoleRuntime.Status` | `TestPagesRenderAndSettingsTest`（全部页面 200、无完整 CorpID、无脚本） | 1cd81c6, 866e21b |
-| §3.1 概览计数与组件状态，不显示密钥/正文 | `Store.Overview`、`Status` | `TestDiagnosticsListsAndOverview`、`TestAdminRuntimeEdges` | 182e483, 866e21b |
-| §3.2 账号分页/搜索、同步、新建、改名、备注、官方链接、删除 | `kf_accounts` 表；`consoleKF` 走 runtime tokenCache 调官方 `/cgi-bin/kf/*`；全部页成功后才写入 | `TestAccountsSyncPagingAndFailureKeepsList`（分页失败不清空）、`TestAccountCreateOutcomes`、`TestAccountEditLinkAndRevision`、runtime E2E（真实 wecom.Client 对 fake 官方接口） | 182e483, 1cd81c6, 866e21b |
-| §3.2 删除：危险区、绑定账号/动作/revision/2 分钟、一次性票据 | `issueTicket/useTicket` + 二次认证 + 输入 open_kfid 确认 | `TestAccountDeleteTicket`（错误确认、复用、过期、成功、删除不动绑定） | 1cd81c6 |
-| §3.2 响应丢失 → UNKNOWN，不按同名合并、不自动重建 | 非 `wecom.APIError` 即视为结果未知，记 UNKNOWN 占位/状态 | `TestAccountCreateOutcomes`、`TestAccountEditLinkAndRevision`、`TestAccountDeleteTicket` | 1cd81c6 |
-| §3.3 绑定新建/启用/停用/改绑/轮换/挑战验证/一次性导出 | `UpdateBinding`（revision CAS 并 +1）、`RotateBindingCustomers`、`bridge.Server.ApplyBinding`（吊销该绑定全部令牌）、`VerifyChallenge` | `TestBindingLifecycle`、`TestRebindRotatesCustomerGenerations`、`TestApplyBindingRevokesTokensAndReplacesCredentials`、`TestVerifyChallenge`、runtime E2E（轮换后旧凭证立即失效、停用不发令牌、对 fake cc-connect 挑战通过） | 182e483, 1cd81c6, 866e21b |
-| §3.3 改绑/轮换/停用使旧 revision、旧 UID、未发送任务失效 | revision +1 使已有 outbox 的 MarkOutboxSending/SendGuarded 失败（#25/#27）；改绑全部客户换代际 | `TestUpdateBindingAndRotateCustomers`（旧 revision outbox 被拒、旧 UID 过期、换代原子） | 182e483 |
-| §3.4 客户查询、转人工、恢复 AI（新代际）、最近 inbox/outbox；区分官方/本地状态 | `Store.Customers`、`BeginHandover`+`SetHandoverStatus`、`RecoverCustomer` | `TestCustomersHandoverRecover`（external_userid 掩码、跨企业 404、revision 409） | 1cd81c6 |
-| §3.5 诊断三视图，默认不显示正文；查看正文二次认证+审计；只能标记不能重发 | `InboxByStates/OutboxByStates`、`diag_marks`、`viewBody` | `TestDiagnosticsHideBodiesAndMark`、`TestWriteFailuresAreReported` | 182e483, 1cd81c6 |
-| §3.6 设置分组展示（只显示环境变量名）、callback 连接测试用同一 SSRF 校验 | `buildAdmin` 生成设置；`TestURL` 用投递同一按目标 SSRF 客户端、拒绝重定向 | `TestAdminRuntimeEdges`（重定向被拒、白名单外拒绝）、E2E | 866e21b |
-| §3.7 审计：操作者、动作、对象、revision、operation_id、结果、脱敏摘要；覆盖登录/同步/CRUD/绑定/接管/导出/连接测试 | `AddActorAudit`、`Audits` 分页；摘要不含凭证 | `TestActorAuditAndPaging`、`TestBindingLifecycle`（审计中无密钥） | 182e483, 1cd81c6 |
-| §4 路由合同 | 全部列出路由已实现；额外 `/admin/stepup`、`/admin/accounts/{id}/link`、`/admin/diagnostics/{kind}/{id}/mark|view`、`/admin/settings/test` | 各测试 | 1cd81c6 |
-| §5 会话：随机 token、HttpOnly/Secure/SameSite=Strict/Path=/admin/TTL、重启失效、数量上限 | 内存会话（32 字节随机）、上限淘汰最旧 | `TestLoginSessionCookieAndThrottle`、`TestRestartInvalidatesSessions`、`TestLogout` | 1cd81c6 |
-| §5 所有 GET/POST 鉴权；POST CSRF + 可信 Origin/Referer | `authed`、`post`（常量时间比较 CSRF） | `TestUnauthenticatedAccessIsRejected`、`TestCSRFAndOrigin` | 1cd81c6 |
-| §5 密码校验常量时间、防爆破 | bcrypt 比较；15 分钟内 5 次失败锁定 | `TestLoginSessionCookieAndThrottle` | 1cd81c6 |
-| §5 Idempotency-Key：同键同参返回原结果、同键异参 409、不重复调微信；revision 冲突 409 | `admin_ops` 表先预留再执行，存 PRG 结果（含 409）重放 | `TestAdminOperationIdempotency`、`TestIdempotencyReplayAndMismatch` | 182e483, 1cd81c6 |
-| §5 路径 ID 不扩大查询边界 | 绑定/客户/正文查看校验 enterprise_id | `TestBindingLifecycle`、`TestCustomersHandoverRecover`、`TestWriteFailuresAreReported` | 1cd81c6 |
-| §6 SQLite 为准、真实 Secret 不展示 | `bootstrapBinding`、`withStoredCredentials` | E2E 重启后控制台修改保留、后台建的绑定带轮换后凭证恢复 | 866e21b |
-| §7 凭证/token/正文不出现在 HTML/URL/日志/错误 | 导出只经会话显示一次；`Cache-Control: no-store`、CSP、X-Frame-Options | `TestBindingLifecycle`、E2E（页面无 AES/真实 token/完整 CorpID） | 1cd81c6, 866e21b |
+| §2 独立监听、不进 public listener | `AppConfig.AdminAddr/AdminHandler`、`App.ServeAdmin`；public mux 不挂 `/admin` | runtime `TestAppServesAdminSeparately`、`TestAdminConsoleEndToEnd`（public 上不可访问）；admin `TestUnauthenticatedAccessIsRejected`（后台不提供 /cgi-bin） | db0cb0b |
+| §2 不信任 X-Forwarded-For | 审计操作者取 TCP 对端地址 | `TestLoginSessionCookieAndThrottle`（actor） | 2b07aa5 |
+| §3 七个页面、无企业选择器、顶部企业名/CorpID 掩码/状态/最近同步 | `admin/templates.go`、`pages.go`；`consoleRuntime.Status` | `TestPagesRenderAndSettingsTest`（全部页面 200、无完整 CorpID、无脚本） | 2b07aa5, db0cb0b |
+| §3.1 概览计数与组件状态，不显示密钥/正文 | `Store.Overview`、`Status` | `TestDiagnosticsListsAndOverview`、`TestAdminRuntimeEdges` | 8e852b5, db0cb0b |
+| §3.2 账号分页/搜索、同步、新建、改名、备注、官方链接、删除 | `kf_accounts` 表；`consoleKF` 走 runtime tokenCache 调官方 `/cgi-bin/kf/*`；全部页成功后才写入 | `TestAccountsSyncPagingAndFailureKeepsList`（分页失败不清空）、`TestAccountCreateOutcomes`、`TestAccountEditLinkAndRevision`、runtime E2E（真实 wecom.Client 对 fake 官方接口） | 8e852b5, 2b07aa5, db0cb0b |
+| §3.2 删除：危险区、绑定账号/动作/revision/2 分钟、一次性票据 | `issueTicket/useTicket` + 二次认证 + 输入 open_kfid 确认 | `TestAccountDeleteTicket`（错误确认、复用、过期、成功、删除不动绑定） | 2b07aa5 |
+| §3.2 响应丢失 → UNKNOWN，不按同名合并、不自动重建 | 非 `wecom.APIError` 即视为结果未知，记 UNKNOWN 占位/状态 | `TestAccountCreateOutcomes`、`TestAccountEditLinkAndRevision`、`TestAccountDeleteTicket` | 2b07aa5 |
+| §3.3 绑定新建/启用/停用/改绑/轮换/挑战验证/一次性导出 | `UpdateBinding`（revision CAS 并 +1）、`RotateBindingCustomers`、`bridge.Server.ApplyBinding`（吊销该绑定全部令牌）、`VerifyChallenge` | `TestBindingLifecycle`、`TestRebindRotatesCustomerGenerations`、`TestApplyBindingRevokesTokensAndReplacesCredentials`、`TestVerifyChallenge`、runtime E2E（轮换后旧凭证立即失效、停用不发令牌、对 fake cc-connect 挑战通过） | 8e852b5, 2b07aa5, db0cb0b |
+| §3.3 改绑/轮换/停用使旧 revision、旧 UID、未发送任务失效 | revision +1 使已有 outbox 的 MarkOutboxSending/SendGuarded 失败（#25/#27）；改绑全部客户换代际 | `TestUpdateBindingAndRotateCustomers`（旧 revision outbox 被拒、旧 UID 过期、换代原子） | 8e852b5 |
+| §3.4 客户查询、转人工、恢复 AI（新代际）、最近 inbox/outbox；区分官方/本地状态 | `Store.Customers`、`BeginHandover`+`SetHandoverStatus`、`RecoverCustomer` | `TestCustomersHandoverRecover`（external_userid 掩码、跨企业 404、revision 409） | 2b07aa5 |
+| §3.5 诊断三视图，默认不显示正文；查看正文二次认证+审计；只能标记不能重发 | `InboxByStates/OutboxByStates`、`diag_marks`、`viewBody` | `TestDiagnosticsHideBodiesAndMark`、`TestWriteFailuresAreReported` | 8e852b5, 2b07aa5 |
+| §3.6 设置分组展示（只显示环境变量名）、callback 连接测试用同一 SSRF 校验 | `buildAdmin` 生成设置；`TestURL` 用投递同一按目标 SSRF 客户端、拒绝重定向 | `TestAdminRuntimeEdges`（重定向被拒、白名单外拒绝）、E2E | db0cb0b |
+| §3.7 审计：操作者、动作、对象、revision、operation_id、结果、脱敏摘要；覆盖登录/同步/CRUD/绑定/接管/导出/连接测试 | `AddActorAudit`、`Audits` 分页；摘要不含凭证 | `TestActorAuditAndPaging`、`TestBindingLifecycle`（审计中无密钥） | 8e852b5, 2b07aa5 |
+| §4 路由合同 | 全部列出路由已实现；额外 `/admin/stepup`、`/admin/accounts/{id}/link`、`/admin/diagnostics/{kind}/{id}/mark|view`、`/admin/settings/test` | 各测试 | 2b07aa5 |
+| §5 会话：随机 token、HttpOnly/Secure/SameSite=Strict/Path=/admin/TTL、重启失效、数量上限 | 内存会话（32 字节随机）、上限淘汰最旧 | `TestLoginSessionCookieAndThrottle`、`TestRestartInvalidatesSessions`、`TestLogout` | 2b07aa5 |
+| §5 所有 GET/POST 鉴权；POST CSRF + 可信 Origin/Referer | `authed`、`post`（常量时间比较 CSRF） | `TestUnauthenticatedAccessIsRejected`、`TestCSRFAndOrigin` | 2b07aa5 |
+| §5 密码校验常量时间、防爆破 | bcrypt 比较；15 分钟内 5 次失败锁定 | `TestLoginSessionCookieAndThrottle` | 2b07aa5 |
+| §5 Idempotency-Key：同键同参返回原结果、同键异参 409、不重复调微信；revision 冲突 409 | `admin_ops` 表先预留再执行，存 PRG 结果（含 409）重放 | `TestAdminOperationIdempotency`、`TestIdempotencyReplayAndMismatch` | 8e852b5, 2b07aa5 |
+| §5 路径 ID 不扩大查询边界 | 绑定/客户/正文查看校验 enterprise_id | `TestBindingLifecycle`、`TestCustomersHandoverRecover`、`TestWriteFailuresAreReported` | 2b07aa5 |
+| §6 SQLite 为准、真实 Secret 不展示 | `bootstrapBinding`、`withStoredCredentials` | E2E 重启后控制台修改保留、后台建的绑定带轮换后凭证恢复 | db0cb0b |
+| §7 凭证/token/正文不出现在 HTML/URL/日志/错误 | 导出只经会话显示一次；`Cache-Control: no-store`、CSP、X-Frame-Options | `TestBindingLifecycle`、E2E（页面无 AES/真实 token/完整 CorpID） | 2b07aa5, db0cb0b |
 
 未做/偏差：
 
