@@ -10,8 +10,21 @@
 - 补充文档导航和 README 入口，便于从项目首页查阅设计资料。
 - 当前版本为文档与配置基线版本，未引入新的业务代码变更。
 
+### 发布包
+
+打 v0.1.1 标签后，GitHub Actions 会自动构建并发布以下基础平台包：
+
+- Linux amd64
+- Linux arm64
+- Windows amd64
+- Windows arm64
+- macOS amd64
+- macOS arm64
+
+每个压缩包包含对应可执行文件、配置示例、README、完整 docs 和 SHA256SUMS 校验文件。Windows 使用 ZIP，Linux/macOS 使用 tar.gz。
+
 ### 发布说明
 
-- 源代码可通过本版本 Release 页面下载。
+- GitHub Release 会同时提供源码压缩包和上述平台发布包。
 - 配置示例、架构说明、测试与部署文档均随源码保留。
 - 后续版本将根据管理后台实施进度继续更新本文件。
