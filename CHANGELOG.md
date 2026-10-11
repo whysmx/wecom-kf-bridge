@@ -4,6 +4,11 @@
 
 ## [未发布]
 
+### 诊断
+
+- `kf/service_state/get` 各类失败分别记录日志：`service_state_upstream_errcode`（含官方 errcode/errmsg、open_kfid；48002 附权限排查提示）、`service_state_call_error`（网络/解析）、`service_state_route_error`、`service_state_unmapped`（含官方 service_state 原始整数）、`service_state_not_ai`；日志不含 token、external_userid 或正文。
+- 启动时若 `wecom.service_state_map` 为空或缺少 AI_ELIGIBLE / WAITING_HUMAN / HUMAN，记录 `WARNING_service_state_map_incomplete`（未映射的官方状态一律视为 UNKNOWN，回复会被拦截）。
+
 ### 修复
 
 - 真实 `kf/sync_msg` 中 `msgtype=event` 的 `event` 是对象（如 `{"event_type":"enter_session",...}`），此前按字符串解析导致整页同步失败（`sync_failed ... cannot unmarshal object`）。现在 `event` 按原始 JSON 保存（事件只记录、不投递），并可读取 `event_type`。

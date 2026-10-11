@@ -75,6 +75,13 @@ type WeComAdapter struct {
 	store   *state.Store
 	now     func() time.Time
 	rmu     sync.RWMutex
+	logger  Logger
+}
+
+func (a *WeComAdapter) log(ev string, f map[string]any) {
+	if a.logger != nil {
+		a.logger.Log(ev, f)
+	}
 }
 
 func (a *WeComAdapter) setRoute(bindingID string, r bindingRoute) {
@@ -132,20 +139,39 @@ func (a *WeComAdapter) GetUser(ctx context.Context, b bridge.Binding, c bridge.C
 	return c, nil
 }
 
+// ServiceState queries kf/service_state/get and maps the official value.
+// Failures are logged with a distinct event per cause; logs carry the
+// binding, the official errcode/errmsg and the raw state integer, never
+// tokens, external user ids or message bodies.
 func (a *WeComAdapter) ServiceState(ctx context.Context, b bridge.Binding, c bridge.Customer) (string, error) {
 	r, cl, tc, err := a.route(b.ID)
 	if err != nil {
+		a.log("service_state_route_error", map[string]any{"binding_id": b.ID, "error": err.Error()})
 		return "", err
 	}
 	resp, err := withToken(ctx, tc, func(tok string) (wecom.ServiceStateResponse, error) {
 		return cl.GetServiceState(ctx, tok, wecom.ServiceStateRequest{OpenKfID: r.openKfID, ExternalUserID: c.ExternalUserID})
 	})
 	if err != nil {
+		var ae *wecom.APIError
+		if errors.As(err, &ae) {
+			f := map[string]any{"binding_id": b.ID, "open_kfid": r.openKfID, "errcode": ae.Code, "errmsg": ae.Message, "http_status": ae.HTTPStatus}
+			if ae.Code == 48002 {
+				f["hint"] = "api forbidden: the calling app must be in 微信客服「可调用接口的应用」, the kf account must be set to 通过API管理, and its servicers must be in the app's visible range"
+			}
+			a.log("service_state_upstream_errcode", f)
+		} else {
+			a.log("service_state_call_error", map[string]any{"binding_id": b.ID, "error": err.Error()})
+		}
 		return "", err
 	}
 	if st, ok := a.states[resp.ServiceState]; ok {
+		if st != state.CustomerAIEligible {
+			a.log("service_state_not_ai", map[string]any{"binding_id": b.ID, "service_state": resp.ServiceState, "mapped": st})
+		}
 		return st, nil
 	}
+	a.log("service_state_unmapped", map[string]any{"binding_id": b.ID, "service_state": resp.ServiceState, "mapped": state.CustomerUnknown})
 	return state.CustomerUnknown, nil
 }
 

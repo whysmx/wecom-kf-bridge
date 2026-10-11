@@ -92,10 +92,12 @@ func (g *Gateway) wire(ctx context.Context, cfg Config, logger Logger) error {
 		logger.Log("recovered_in_flight", map[string]any{"inbox": in, "outbox": out})
 	}
 	adapter := &WeComAdapter{clients: map[string]*wecom.Client{}, tokens: map[string]*tokenCache{}, routes: map[string]bindingRoute{}, states: map[int]string{}, store: st, now: time.Now}
+	adapter.logger = logger
 	for k, v := range cfg.WeCom.ServiceStateMap {
 		n, _ := strconv.Atoi(k)
 		adapter.states[n] = v
 	}
+	warnServiceStateMap(cfg.WeCom.ServiceStateMap, logger)
 	g.Router = wecom.NewRouter()
 	g.Sync = &SyncWorker{Store: st, Scopes: map[string]scopeInfo{}, Origins: wecom.OriginPolicy{CustomerOrigins: cfg.WeCom.CustomerOrigins}, Interval: time.Duration(cfg.Workers.SyncIntervalSeconds) * time.Second, MaxPages: cfg.Workers.MaxSyncPages, MaxConc: cfg.Workers.MaxConcurrency, Logger: logger}
 	g.adapter, g.vbs, g.scopes = adapter, map[string]bridge.Binding{}, map[string]string{}
@@ -229,3 +231,23 @@ func (g *Gateway) onNotification(ctx context.Context, entID string, n wecom.Noti
 type nopRuntimeLogger struct{}
 
 func (nopRuntimeLogger) Log(string, map[string]any) {}
+
+// warnServiceStateMap flags a service_state_map the send path cannot work
+// with: replies need some state mapped to AI_ELIGIBLE (every unmapped value
+// is treated as UNKNOWN and held), and console handover/recover need
+// WAITING_HUMAN and AI_ELIGIBLE targets.
+func warnServiceStateMap(m map[string]string, logger Logger) {
+	have := map[string]bool{}
+	for _, v := range m {
+		have[v] = true
+	}
+	var missing []string
+	for _, need := range []string{state.CustomerAIEligible, state.CustomerWaitingHuman, state.CustomerHuman} {
+		if !have[need] {
+			missing = append(missing, need)
+		}
+	}
+	if len(m) == 0 || len(missing) > 0 {
+		logger.Log("WARNING_service_state_map_incomplete", map[string]any{"entries": len(m), "missing": missing, "effect": "unmapped official service_state values are UNKNOWN: replies are held (70006); without AI_ELIGIBLE no reply can be sent"})
+	}
+}
