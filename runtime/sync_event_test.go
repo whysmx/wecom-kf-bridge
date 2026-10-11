@@ -29,7 +29,12 @@ func TestSyncPageWithBadMessageStillDelivers(t *testing.T) {
 		{"msgid":"bad-1","msgtype":"text","send_time":"oops","text":{"content":"x"}},
 		{"msgid":"t1","open_kfid":"kf1","external_userid":"ext-a","send_time":1800000001,"origin":3,"msgtype":"text","text":{"content":"第一条"}},
 		{"msgid":"t2","open_kfid":"kf1","external_userid":"ext-b","send_time":1800000002,"origin":3,"msgtype":"text","text":{"content":"第二条"}},
-		{"msgid":"t3","open_kfid":"kf1","external_userid":"ext-c","send_time":1800000003,"origin":3,"msgtype":"text","text":{"content":"第三条"}}]}`}}
+		{"msgid":"t3","open_kfid":"kf1","external_userid":"ext-c","send_time":1800000003,"origin":3,"msgtype":"text","text":{"content":"第三条"}}]}`},
+		// Extra sync rounds (startup / periodic timer / webhook, whose count
+		// depends on scheduling under -race) see no new messages and keep the
+		// cursor at c1, like the real API. Determinism comes from the fake,
+		// not from timing.
+		idle: "c1"}
 	wx := httptest.NewServer(fw.handler(t))
 	defer wx.Close()
 
@@ -132,8 +137,9 @@ func TestSyncPageWithBadMessageStillDelivers(t *testing.T) {
 			t.Fatalf("missing %s in %s", want, all)
 		}
 	}
-	cancel()
-	wg.Wait()
+	// Assert while workers still run: reading right after cancel() can land
+	// on a pooled connection whose in-flight worker query was interrupted
+	// (SQLITE_INTERRUPT); the state asserted here is already final.
 	for id, cat := range map[string]string{"ev-1": wecom.CategoryEvent, "bad-1": wecom.CategoryUnparseable} {
 		m, err := g.Store.InboxByExternalID(context.Background(), "scope:e1:kf1", id)
 		if err != nil || m.State != state.InboxIgnored || m.ErrorCategory != cat {
@@ -143,4 +149,19 @@ func TestSyncPageWithBadMessageStillDelivers(t *testing.T) {
 	if sc, _ := g.Store.Scope(context.Background(), "scope:e1:kf1"); sc.Cursor != "c1" {
 		t.Fatalf("cursor not advanced: %+v", sc)
 	}
+	// The page was requested from the start, and every later round resumed
+	// from the committed c1 (never re-read the bad page from "").
+	fw.mu.Lock()
+	cursors := append([]string(nil), fw.cursors...)
+	fw.mu.Unlock()
+	if len(cursors) == 0 || cursors[0] != "" {
+		t.Fatalf("cursors %q", cursors)
+	}
+	for _, c := range cursors[1:] {
+		if c != "c1" {
+			t.Fatalf("later round did not resume from c1: %q", cursors)
+		}
+	}
+	cancel()
+	wg.Wait()
 }
