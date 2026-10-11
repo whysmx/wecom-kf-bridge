@@ -293,11 +293,18 @@ func (d *DeliveryWorker) autoRecover(ctx context.Context, c state.Customer, m st
 	return nc, m
 }
 
+const stepTimeout = 5 * time.Second
+
 // deliver advances one message; false means later messages of the same
 // customer must wait.
 func (d *DeliveryWorker) deliver(ctx context.Context, m state.InboxMessage) bool {
 	step := func(to, cat string) bool {
-		_, err := d.Store.TransitionInbox(ctx, m.ID, to, cat)
+		// Record the outcome even if shutdown cancelled ctx meanwhile: after a
+		// callback was accepted, losing the transition would leave the message
+		// POSTING and redeliver it after restart (issue #5).
+		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stepTimeout)
+		defer cancel()
+		_, err := d.Store.TransitionInbox(sctx, m.ID, to, cat)
 		if err != nil {
 			d.Logger.Log("delivery_transition_failed", map[string]any{"inbox_id": m.ID, "to": to, "error": err})
 			return false

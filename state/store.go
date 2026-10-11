@@ -248,7 +248,7 @@ const MaxOpenConns = 8
 
 // OpenWithOptions opens a SQLite file with the supplied options.
 func OpenWithOptions(path string, opts Options) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open(noInterruptDriverName, path)
 	if err != nil {
 		return nil, err
 	}
