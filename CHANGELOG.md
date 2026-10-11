@@ -13,6 +13,7 @@
 
 - 真实 `kf/sync_msg` 中 `msgtype=event` 的 `event` 是对象（如 `{"event_type":"enter_session",...}`），此前按字符串解析导致整页同步失败（`sync_failed ... cannot unmarshal object`）。现在 `event` 按原始 JSON 保存（事件只记录、不投递），并可读取 `event_type`。
 - `msg_list` 改为逐条解码：单条无法解析的消息不再拖垮整页，按其 msgid 记为 IGNORED（`unparseable`）并告警（不记录正文），其余消息照常入库投递，游标照常推进；无 msgid 的坏条目只告警跳过，避免同一页无限重试。
+- 发送前官方 `service_state` 非 AI 时写入的本地栅栏此前永不自动解除（`SetHandoverStatus` 拒绝写回 AI_ELIGIBLE），会话结束后客户再次来信也一直 HELD，只能后台手工恢复。现在：官方 4（CLOSED）只拦截本次发送、不写持久栅栏；2/3/未知写入「自动栅栏」（`customers.fence_source='auto'`）；客户再次来信时投递前查询官方状态，若为 0/1 则轮换代际清除栅栏并以新 UID 投递该条（旧 UID/旧 outbox 失效，接管期间已 HELD 的消息保持 HELD）。后台手工转人工为 `manual`，永不自动解除，只能后台恢复。旧库迁移：最近一次接管事件来自 `service_state_precheck` 或状态为 CLOSED 的视为 auto，其余视为 manual。
 
 ### 文档
 
