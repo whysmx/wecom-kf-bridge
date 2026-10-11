@@ -242,6 +242,9 @@ func init() {
 	})
 }
 
+// migrationTimeout bounds the startup pragmas + schema migration in New.
+const migrationTimeout = 60 * time.Second
+
 // MaxOpenConns bounds the pool: SQLite has one writer; a few readers are
 // enough and keep file handles bounded.
 const MaxOpenConns = 8
@@ -282,7 +285,13 @@ func New(db *sql.DB, opts Options) (*Store, error) {
 		}
 		s.sealer = sl
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Startup migration runs once per process and is bounded only as a
+	// safety net against a wedged database. 10s was too tight on loaded
+	// machines (race detector, slow disks, many parallel test stores) and
+	// made New fail spuriously; 60s still fails fast relative to a hung
+	// deploy while leaving ample headroom for many idempotent DDL statements
+	// each waiting up to busy_timeout (5s) on a locked file.
+	ctx, cancel := context.WithTimeout(context.Background(), migrationTimeout)
 	defer cancel()
 	for _, q := range []string{"PRAGMA foreign_keys=ON", "PRAGMA journal_mode=WAL", "PRAGMA busy_timeout=5000"} {
 		if _, err := db.ExecContext(ctx, q); err != nil {
