@@ -30,6 +30,10 @@ type fakeWeCom struct {
 	mu    sync.Mutex
 	sends []map[string]any
 	pages []string
+	// idle is next_cursor returned once pages are exhausted (default c9);
+	// cursors records the cursor of every sync_msg request.
+	idle    string
+	cursors []string
 }
 
 func (f *fakeWeCom) handler(t *testing.T) http.Handler {
@@ -45,8 +49,14 @@ func (f *fakeWeCom) handler(t *testing.T) http.Handler {
 		if req["token"] != "PULL" || req["open_kfid"] != "kf1" {
 			t.Errorf("sync request %v", req)
 		}
+		c, _ := req["cursor"].(string)
+		f.cursors = append(f.cursors, c)
 		if len(f.pages) == 0 {
-			fmt.Fprint(w, `{"errcode":0,"next_cursor":"c9","has_more":0,"msg_list":[]}`)
+			idle := f.idle
+			if idle == "" {
+				idle = "c9"
+			}
+			fmt.Fprintf(w, `{"errcode":0,"next_cursor":%q,"has_more":0,"msg_list":[]}`, idle)
 			return
 		}
 		p := f.pages[0]
