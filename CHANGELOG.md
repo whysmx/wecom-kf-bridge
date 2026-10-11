@@ -4,6 +4,11 @@
 
 ## [未发布]
 
+### 修复
+
+- 真实 `kf/sync_msg` 中 `msgtype=event` 的 `event` 是对象（如 `{"event_type":"enter_session",...}`），此前按字符串解析导致整页同步失败（`sync_failed ... cannot unmarshal object`）。现在 `event` 按原始 JSON 保存（事件只记录、不投递），并可读取 `event_type`。
+- `msg_list` 改为逐条解码：单条无法解析的消息不再拖垮整页，按其 msgid 记为 IGNORED（`unparseable`）并告警（不记录正文），其余消息照常入库投递，游标照常推进；无 msgid 的坏条目只告警跳过，避免同一页无限重试。
+
 ### 文档
 
 - 精简对外文档：README 改为项目介绍；保留架构概览与配置参考；移除设计期专题与评审明细归档（版本说明以本文件为准）。

@@ -80,6 +80,8 @@ const (
 	CategoryEvent         = "event"
 	CategoryForeignKf     = "foreign_open_kfid"
 	CategoryNoExternalUID = "missing_external_userid"
+	// CategoryUnparseable quarantines a msg_list item that failed to decode.
+	CategoryUnparseable = "unparseable"
 )
 
 func (o SyncOptions) classify(ctx context.Context, page SyncResponse, now time.Time) ([]state.InboxMessage, error) {
@@ -116,6 +118,16 @@ func (o SyncOptions) classify(ctx context.Context, page SyncResponse, now time.T
 			in.State = state.InboxReceived
 		}
 		out = append(out, in)
+	}
+	// Bad items: recorded IGNORED under their msgid (dedupe-safe, never
+	// delivered) so the cursor can advance past them; without a msgid they
+	// are only alerted, since retrying the same page would loop forever.
+	for _, b := range page.Bad {
+		o.alert("wecom_sync_message_quarantined", map[string]any{"msgid": b.MsgID, "index": b.Index, "error": b.Err})
+		if b.MsgID == "" {
+			continue
+		}
+		out = append(out, state.InboxMessage{ScopeID: o.Scope, BindingID: o.BindingID, ExternalMsgID: b.MsgID, Type: "unparseable", State: state.InboxIgnored, ErrorCategory: CategoryUnparseable, ReceivedAt: now, UpdatedAt: now})
 	}
 	return out, nil
 }
@@ -183,7 +195,7 @@ func (c *Client) SyncAll(ctx context.Context, opts SyncOptions) (SyncResult, err
 			return result, err
 		}
 		result.Pages++
-		result.Messages += len(page.Messages)
+		result.Messages += len(page.Messages) + len(page.Bad)
 		result.Inserted += n
 		cursor = page.NextCursor
 		result.Cursor = cursor
