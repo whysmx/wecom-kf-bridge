@@ -514,11 +514,17 @@ func (s *Server) send(ctx context.Context, b Binding, sc state.Customer, agent, 
 		return errAPI{ErrCodeUnavailable, "service state unavailable", http.StatusServiceUnavailable}
 	}
 	if st != state.CustomerAIEligible {
-		// Fence locally first; an official non-AI state is never overridden.
+		// An official non-AI state is never overridden. 已结束/未开始 (CLOSED)
+		// only blocks this send: the next customer message reopens the
+		// session officially (→ 0), so no persistent fence is written.
+		// Human/queue/unknown states fence locally as automatic fences,
+		// cleared only when the official state is AI again (delivery path).
 		if st == "" {
 			st = state.CustomerUnknown
 		}
-		_ = s.cfg.Store.SetHandoverStatus(context.WithoutCancel(ctx), sc.ID, st, "service_state_precheck")
+		if st != state.CustomerClosed {
+			_ = s.cfg.Store.SetHandoverStatus(context.WithoutCancel(ctx), sc.ID, st, "service_state_precheck")
+		}
 		_, _ = s.cfg.Store.BlockOutbox(context.WithoutCancel(ctx), o.ID, state.BlockHeld)
 		return errAPI{ErrCodeDisabled, "customer held for human service", http.StatusForbidden}
 	}

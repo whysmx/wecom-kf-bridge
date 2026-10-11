@@ -119,7 +119,17 @@ type Customer struct {
 	// message; it opens the send window. WindowUsed counts reserved sends.
 	LastInboundAt time.Time
 	WindowUsed    int
+	// FenceSource says who put a non-AI state in place: FenceManual (admin
+	// takeover, sticky until admin recover) or FenceAuto (an official
+	// service_state observation, cleared when the official state is AI
+	// again). Empty when not fenced.
+	FenceSource string
 }
+
+const (
+	FenceManual = "manual"
+	FenceAuto   = "auto"
+)
 
 type SyncScope struct {
 	ID            string
@@ -361,10 +371,17 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		{"sync_scopes", "sync_token", "TEXT NOT NULL DEFAULT ''"},
 		{"sync_scopes", "sync_token_expires_at", "INTEGER NOT NULL DEFAULT 0"},
 		{"outbox", "binding_revision", "INTEGER NOT NULL DEFAULT 0"},
+		{"customers", "fence_source", "TEXT NOT NULL DEFAULT ''"},
 	} {
 		if err := addColumn(ctx, db, c.table, c.col, c.def); err != nil {
 			return err
 		}
+	}
+	// Customers fenced before fence_source existed: if the latest handover
+	// event came from the send-time service_state precheck, the fence was
+	// automatic; anything else (admin) is treated as manual (sticky).
+	if _, err := db.ExecContext(ctx, `UPDATE customers SET fence_source=CASE WHEN state='CLOSED' OR (SELECT reason FROM handover_events h WHERE h.customer_id=customers.id ORDER BY h.id DESC LIMIT 1)='service_state_precheck' THEN 'auto' ELSE 'manual' END WHERE state!='AI_ELIGIBLE' AND fence_source=''`); err != nil {
+		return fmt.Errorf("state migration: %w", err)
 	}
 	if err := migrateAdmin(ctx, db); err != nil {
 		return err
@@ -661,13 +678,13 @@ func (s *Store) EnsureCustomer(ctx context.Context, enterpriseID, bindingID, ext
 	return s.Customer(ctx, id)
 }
 
-const customerCols = `id,enterprise_id,binding_id,external_user_id,generation,uid,nickname,nickname_updated_at,official_status,state,fence_generation,revision,created_at,updated_at,authorized,last_inbound_at,window_used`
+const customerCols = `id,enterprise_id,binding_id,external_user_id,generation,uid,nickname,nickname_updated_at,official_status,state,fence_generation,revision,created_at,updated_at,authorized,last_inbound_at,window_used,fence_source`
 
 func scanCustomer(row interface{ Scan(...any) error }) (Customer, error) {
 	var c Customer
 	var n, cat, ua, li int64
 	var auth int
-	err := row.Scan(&c.ID, &c.EnterpriseID, &c.BindingID, &c.ExternalUserID, &c.Generation, &c.UID, &c.Nickname, &n, &c.OfficialStatus, &c.State, &c.FenceGeneration, &c.Revision, &cat, &ua, &auth, &li, &c.WindowUsed)
+	err := row.Scan(&c.ID, &c.EnterpriseID, &c.BindingID, &c.ExternalUserID, &c.Generation, &c.UID, &c.Nickname, &n, &c.OfficialStatus, &c.State, &c.FenceGeneration, &c.Revision, &cat, &ua, &auth, &li, &c.WindowUsed, &c.FenceSource)
 	c.Authorized = auth != 0
 	c.LastInboundAt = timeFrom(li)
 	c.NicknameUpdatedAt = timeFrom(n)
@@ -762,7 +779,7 @@ func (s *Store) BeginHandover(ctx context.Context, customerID, reason string) (C
 		return Customer{}, mapNotFound(err)
 	}
 	now := s.now()
-	if _, err = tx.ExecContext(ctx, `UPDATE customers SET state=?,fence_generation=?,revision=revision+1,updated_at=? WHERE id=?`, CustomerWaitingHuman, c.Generation, unix(now), customerID); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE customers SET state=?,fence_generation=?,fence_source='manual',revision=revision+1,updated_at=? WHERE id=?`, CustomerWaitingHuman, c.Generation, unix(now), customerID); err != nil {
 		return Customer{}, err
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO handover_events(customer_id,old_generation,state,reason,created_at) VALUES(?,?,?,?,?)`, customerID, c.Generation, CustomerWaitingHuman, reason, unix(now)); err != nil {
@@ -772,6 +789,7 @@ func (s *Store) BeginHandover(ctx context.Context, customerID, reason string) (C
 		return Customer{}, err
 	}
 	c.State = CustomerWaitingHuman
+	c.FenceSource = FenceManual
 	c.FenceGeneration = c.Generation
 	c.Revision++
 	c.UpdatedAt = now
@@ -798,13 +816,44 @@ func (s *Store) SetHandoverStatus(ctx context.Context, customerID, status, reaso
 		return mapNotFound(err)
 	}
 	now := s.now()
-	if _, err = tx.ExecContext(ctx, `UPDATE customers SET state=?,revision=revision+1,updated_at=? WHERE id=?`, status, unix(now), customerID); err != nil {
+	// A manual takeover stays manual; otherwise the fence is automatic.
+	if _, err = tx.ExecContext(ctx, `UPDATE customers SET state=?,fence_source=CASE WHEN fence_source='manual' THEN 'manual' ELSE 'auto' END,revision=revision+1,updated_at=? WHERE id=?`, status, unix(now), customerID); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO handover_events(customer_id,old_generation,state,reason,created_at) VALUES(?,?,?,?,?)`, customerID, gen, status, reason, unix(now)); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// ObserveOfficialAI is called when the official service_state maps to
+// AI_ELIGIBLE. If the customer is fenced automatically (from an earlier
+// official observation, or a legacy CLOSED), the fence is cleared by moving
+// to a new generation, exactly like RecoverCustomer, so old UIDs/outbox can
+// never send. A manual takeover is never cleared. It returns the current
+// customer and whether a recovery happened.
+func (s *Store) ObserveOfficialAI(ctx context.Context, customerID string) (Customer, bool, error) {
+	defer s.lock("customer:" + customerID)()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Customer{}, false, err
+	}
+	defer tx.Rollback()
+	c, err := scanCustomer(tx.QueryRowContext(ctx, `SELECT `+customerCols+` FROM customers WHERE id=?`, customerID))
+	if err != nil {
+		return Customer{}, false, mapNotFound(err)
+	}
+	if c.State == CustomerAIEligible || c.FenceSource != FenceAuto {
+		return c, false, nil
+	}
+	nc, err := s.recoverTx(ctx, tx, c, "official_state_ai")
+	if err != nil {
+		return c, false, err
+	}
+	if err = tx.Commit(); err != nil {
+		return c, false, err
+	}
+	return nc, true, nil
 }
 
 func (s *Store) RecoverCustomer(ctx context.Context, customerID, reason string) (Customer, error) {
@@ -821,6 +870,30 @@ func (s *Store) RecoverCustomer(ctx context.Context, customerID, reason string) 
 	if c.State != CustomerHuman && c.State != CustomerWaitingHuman {
 		return Customer{}, fmt.Errorf("state: cannot recover from %s", c.State)
 	}
+	nc, err := s.recoverTx(ctx, tx, c, reason)
+	if err != nil {
+		return Customer{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return Customer{}, err
+	}
+	return nc, nil
+}
+
+// RebindInboxGeneration moves one not-yet-delivered inbox message to the
+// customer's new generation after an automatic recovery (CAS on the old
+// generation and a pre-delivery state), so it is delivered under the new UID.
+func (s *Store) RebindInboxGeneration(ctx context.Context, id, from, to int64) error {
+	r, err := s.db.ExecContext(ctx, `UPDATE inbox SET generation=?,updated_at=? WHERE id=? AND generation=? AND state IN ('RECEIVED','CLASSIFIED','READY')`, to, unix(s.now()), id, from)
+	if err != nil {
+		return err
+	}
+	return casApplied(r)
+}
+
+// recoverTx moves a customer to a new generation/UID, AI eligible, with the
+// fence at the new generation and no fence source.
+func (s *Store) recoverTx(ctx context.Context, tx *sql.Tx, c Customer, reason string) (Customer, error) {
 	uid, err := s.uid()
 	if err != nil {
 		return Customer{}, err
@@ -831,22 +904,20 @@ func (s *Store) RecoverCustomer(ctx context.Context, customerID, reason string) 
 	}
 	now := s.now()
 	newGen := c.Generation + 1
-	if _, err = tx.ExecContext(ctx, `UPDATE customers SET generation=?,uid=?,state=?,fence_generation=?,revision=revision+1,updated_at=? WHERE id=?`, newGen, uid, CustomerAIEligible, newGen, unix(now), customerID); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE customers SET generation=?,uid=?,state=?,fence_generation=?,fence_source='',revision=revision+1,updated_at=? WHERE id=?`, newGen, uid, CustomerAIEligible, newGen, unix(now), c.ID); err != nil {
 		return Customer{}, err
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO customer_uids(binding_id,uid,customer_id,generation,created_at) VALUES(?,?,?,?,?)`, c.BindingID, uid, customerID, newGen, unix(now)); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO customer_uids(binding_id,uid,customer_id,generation,created_at) VALUES(?,?,?,?,?)`, c.BindingID, uid, c.ID, newGen, unix(now)); err != nil {
 		return Customer{}, err
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO handover_events(customer_id,old_generation,state,reason,created_at) VALUES(?,?,?,?,?)`, customerID, c.Generation, CustomerAIEligible, reason, unix(now)); err != nil {
-		return Customer{}, err
-	}
-	if err = tx.Commit(); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO handover_events(customer_id,old_generation,state,reason,created_at) VALUES(?,?,?,?,?)`, c.ID, c.Generation, CustomerAIEligible, reason, unix(now)); err != nil {
 		return Customer{}, err
 	}
 	c.Generation = newGen
 	c.UID = uid
 	c.State = CustomerAIEligible
 	c.FenceGeneration = newGen
+	c.FenceSource = ""
 	c.Revision++
 	c.UpdatedAt = now
 	return c, nil

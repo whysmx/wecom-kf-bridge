@@ -184,6 +184,9 @@ func (g *Gateway) wire(ctx context.Context, cfg Config, logger Logger) error {
 	}
 	g.Server = srv
 	g.Delivery.Server = srv
+	g.Delivery.OfficialState = func(ctx context.Context, bindingID string, c state.Customer) (string, error) {
+		return adapter.ServiceState(ctx, bridge.Binding{ID: bindingID}, bridge.Customer{ExternalUserID: c.ExternalUserID})
+	}
 	g.Sync.OnSynced = g.Delivery.Kick
 	g.Health = NewHealth(HealthConfig{Logger: logger, Database: func(ctx context.Context) error { return st.DB().PingContext(ctx) }})
 	mux := http.NewServeMux()

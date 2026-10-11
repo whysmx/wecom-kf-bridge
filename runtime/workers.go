@@ -183,6 +183,9 @@ type DeliveryWorker struct {
 	MaxAttempts int
 	MaxConc     int
 	Logger      Logger
+	// OfficialState queries the official service_state (mapped) for an
+	// automatically fenced customer; nil disables automatic recovery.
+	OfficialState func(ctx context.Context, bindingID string, c state.Customer) (string, error)
 
 	kick chan struct{}
 	once sync.Once
@@ -261,6 +264,35 @@ func (d *DeliveryWorker) DeliverOnce(ctx context.Context) {
 	wg.Wait()
 }
 
+// autoRecover: a customer fenced automatically (from an official
+// service_state observation) writes again. If the official state is now AI
+// (0/1), clear the fence with a new generation and deliver this message
+// under the new UID. Manual takeovers never get here (FenceSource manual).
+func (d *DeliveryWorker) autoRecover(ctx context.Context, c state.Customer, m state.InboxMessage) (state.Customer, state.InboxMessage) {
+	if d.OfficialState == nil {
+		return c, m
+	}
+	st, err := d.OfficialState(ctx, m.BindingID, c)
+	if err != nil || st != state.CustomerAIEligible {
+		return c, m
+	}
+	nc, recovered, err := d.Store.ObserveOfficialAI(ctx, c.ID)
+	if err != nil {
+		d.Logger.Log("auto_recover_failed", map[string]any{"customer_id": c.ID, "error": err.Error()})
+		return c, m
+	}
+	if nc.Generation == m.Generation+1 || recovered {
+		if err := d.Store.RebindInboxGeneration(ctx, m.ID, m.Generation, nc.Generation); err != nil {
+			return nc, m
+		}
+		m.Generation = nc.Generation
+	}
+	if recovered {
+		d.Logger.Log("customer_auto_recovered", map[string]any{"customer_id": c.ID, "generation": nc.Generation})
+	}
+	return nc, m
+}
+
 // deliver advances one message; false means later messages of the same
 // customer must wait.
 func (d *DeliveryWorker) deliver(ctx context.Context, m state.InboxMessage) bool {
@@ -287,6 +319,9 @@ func (d *DeliveryWorker) deliver(ctx context.Context, m state.InboxMessage) bool
 	c, err := d.Store.Customer(ctx, m.CustomerID)
 	if err != nil {
 		return false
+	}
+	if c.State != state.CustomerAIEligible && c.FenceSource == state.FenceAuto && c.Authorized && c.Generation == m.Generation {
+		c, m = d.autoRecover(ctx, c, m)
 	}
 	if c.State != state.CustomerAIEligible || !c.Authorized || c.Generation != m.Generation {
 		return step(state.InboxHeld, "customer_not_eligible")
