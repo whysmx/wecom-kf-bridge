@@ -155,7 +155,11 @@ func (a *WeComAdapter) ServiceState(ctx context.Context, b bridge.Binding, c bri
 	if err != nil {
 		var ae *wecom.APIError
 		if errors.As(err, &ae) {
-			a.log("service_state_upstream_errcode", map[string]any{"binding_id": b.ID, "errcode": ae.Code, "errmsg": ae.Message, "http_status": ae.HTTPStatus})
+			f := map[string]any{"binding_id": b.ID, "open_kfid": r.openKfID, "errcode": ae.Code, "errmsg": ae.Message, "http_status": ae.HTTPStatus}
+			if ae.Code == 48002 {
+				f["hint"] = "api forbidden: the calling app must be in 微信客服「可调用接口的应用」, the kf account must be set to 通过API管理, and its servicers must be in the app's visible range"
+			}
+			a.log("service_state_upstream_errcode", f)
 		} else {
 			a.log("service_state_call_error", map[string]any{"binding_id": b.ID, "error": err.Error()})
 		}

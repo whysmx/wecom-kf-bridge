@@ -77,6 +77,15 @@ func TestServiceStateDiagnostics(t *testing.T) {
 	}
 	check("service_state_upstream_errcode", map[string]any{"errcode": 95014, "errmsg": "no permission"})
 
+	body = `{"errcode":48002,"errmsg":"api forbidden"}`
+	if _, err := a.ServiceState(ctx, b, cust); err == nil {
+		t.Fatal("48002 accepted")
+	}
+	check("service_state_upstream_errcode", map[string]any{"errcode": 48002, "errmsg": "api forbidden", "open_kfid": "kf1"})
+	if _, f := l.last(); !strings.Contains(fmt.Sprint(f["hint"]), "可调用接口的应用") {
+		t.Fatal("no 48002 hint")
+	}
+
 	body = `{"errcode":0,"service_state":0}`
 	if st, err := a.ServiceState(ctx, b, cust); err != nil || st != state.CustomerUnknown {
 		t.Fatal(st, err)
