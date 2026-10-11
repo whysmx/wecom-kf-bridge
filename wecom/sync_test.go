@@ -16,11 +16,13 @@ import (
 type syncLog struct {
 	mu     sync.Mutex
 	events []string
+	fields []map[string]any
 }
 
-func (l *syncLog) Log(e string, _ map[string]any) {
+func (l *syncLog) Log(e string, f map[string]any) {
 	l.mu.Lock()
 	l.events = append(l.events, e)
+	l.fields = append(l.fields, f)
 	l.mu.Unlock()
 }
 func (l *syncLog) has(e string) bool {
@@ -86,7 +88,7 @@ func TestSyncAllNoFabricatedCompatIDAndOriginFilter(t *testing.T) {
 		SyncResponse{NextCursor: "c1", HasMore: 1, Messages: []SyncMessage{
 			{MsgID: "wx-1", OpenKfID: "kf1", ExternalUserID: "ext-a", SendTime: 1700000000, Origin: 3, MsgType: "text", Text: &SyncText{Content: "问"}},
 			{MsgID: "wx-2", OpenKfID: "kf1", ExternalUserID: "ext-a", Origin: 5, MsgType: "text", Text: &SyncText{Content: "人工回复"}},
-			{MsgID: "wx-3", OpenKfID: "kf1", Origin: 4, MsgType: "event", Event: "enter_session"},
+			{MsgID: "wx-3", OpenKfID: "kf1", Origin: 4, MsgType: "event", Event: json.RawMessage(`{"event_type":"enter_session"}`)},
 		}},
 		SyncResponse{NextCursor: "c2", HasMore: 0, Messages: []SyncMessage{
 			{MsgID: "wx-4", OpenKfID: "kf-other", ExternalUserID: "ext-b", Origin: 3, MsgType: "text"},

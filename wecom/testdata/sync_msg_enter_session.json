@@ -1,0 +1,31 @@
+{
+  "errcode": 0,
+  "errmsg": "ok",
+  "next_cursor": "4gw7MepFLfgF2VC5npN",
+  "has_more": 0,
+  "msg_list": [
+    {
+      "msgid": "from_msgid_4622416642169452483",
+      "send_time": 1800000000,
+      "origin": 4,
+      "msgtype": "event",
+      "event": {
+        "event_type": "enter_session",
+        "open_kfid": "wkREDACTED000000000000000000",
+        "external_userid": "wmREDACTED00000000000000000000",
+        "scene": "123",
+        "scene_param": "abc",
+        "welcome_code": "aaaaaa"
+      }
+    },
+    {
+      "msgid": "from_msgid_REDACTED_TEXT_1",
+      "open_kfid": "wkREDACTED000000000000000000",
+      "external_userid": "wmREDACTED00000000000000000000",
+      "send_time": 1800000001,
+      "origin": 3,
+      "msgtype": "text",
+      "text": {"content": "你好"}
+    }
+  ]
+}

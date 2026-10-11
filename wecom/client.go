@@ -401,18 +401,40 @@ type SyncText struct {
 	Content string `json:"content"`
 }
 type SyncMessage struct {
-	MsgID          string          `json:"msgid"`
-	OpenKfID       string          `json:"open_kfid"`
-	ExternalUserID string          `json:"external_userid"`
-	SendTime       int64           `json:"send_time"`
-	Origin         int             `json:"origin"`
-	MsgType        string          `json:"msgtype"`
-	Event          string          `json:"event,omitempty"`
-	Text           *SyncText       `json:"text,omitempty"`
-	Content        string          `json:"content,omitempty"`
-	MediaID        string          `json:"media_id,omitempty"`
-	Raw            json.RawMessage `json:"-"`
+	MsgID          string `json:"msgid"`
+	OpenKfID       string `json:"open_kfid"`
+	ExternalUserID string `json:"external_userid"`
+	SendTime       int64  `json:"send_time"`
+	Origin         int    `json:"origin"`
+	MsgType        string `json:"msgtype"`
+	// Event is an object for msgtype=event (e.g. {"event_type":"enter_session",...});
+	// events are recorded only, so it is kept raw.
+	Event   json.RawMessage `json:"event,omitempty"`
+	Text    *SyncText       `json:"text,omitempty"`
+	Content string          `json:"content,omitempty"`
+	MediaID string          `json:"media_id,omitempty"`
+	Raw     json.RawMessage `json:"-"`
 }
+
+// EventType returns event.event_type, or "" if absent/unparseable.
+func (m SyncMessage) EventType() string {
+	var e struct {
+		EventType string `json:"event_type"`
+	}
+	if len(m.Event) == 0 || json.Unmarshal(m.Event, &e) != nil {
+		return ""
+	}
+	return e.EventType
+}
+
+// BadSyncMessage is a msg_list item that could not be decoded. MsgID is
+// recovered leniently when possible; the raw item is never kept or logged.
+type BadSyncMessage struct {
+	Index int
+	MsgID string
+	Err   string
+}
+
 type SyncResponse struct {
 	ErrCode    int           `json:"errcode"`
 	ErrMsg     string        `json:"errmsg"`
@@ -420,6 +442,38 @@ type SyncResponse struct {
 	HasMore    int           `json:"has_more"`
 	Messages   []SyncMessage `json:"msg_list"`
 	MsgList    []SyncMessage `json:"-"`
+	// Bad lists items that failed to decode; one bad item never fails the
+	// whole page.
+	Bad []BadSyncMessage `json:"-"`
+}
+
+// UnmarshalJSON decodes msg_list items one by one.
+func (r *SyncResponse) UnmarshalJSON(b []byte) error {
+	var env struct {
+		ErrCode    int               `json:"errcode"`
+		ErrMsg     string            `json:"errmsg"`
+		NextCursor string            `json:"next_cursor"`
+		HasMore    int               `json:"has_more"`
+		MsgList    []json.RawMessage `json:"msg_list"`
+	}
+	if err := json.Unmarshal(b, &env); err != nil {
+		return err
+	}
+	*r = SyncResponse{ErrCode: env.ErrCode, ErrMsg: env.ErrMsg, NextCursor: env.NextCursor, HasMore: env.HasMore}
+	for i, raw := range env.MsgList {
+		var m SyncMessage
+		if err := json.Unmarshal(raw, &m); err != nil {
+			var id struct {
+				MsgID any `json:"msgid"`
+			}
+			_ = json.Unmarshal(raw, &id)
+			sid, _ := id.MsgID.(string)
+			r.Bad = append(r.Bad, BadSyncMessage{Index: i, MsgID: sid, Err: err.Error()})
+			continue
+		}
+		r.Messages = append(r.Messages, m)
+	}
+	return nil
 }
 
 func (c *Client) SyncMsg(ctx context.Context, accessToken string, req SyncRequest) (SyncResponse, error) {
