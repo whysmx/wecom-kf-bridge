@@ -103,6 +103,7 @@ func SanitizeFields(fields map[string]any) map[string]any {
 
 var secretKey = regexp.MustCompile(`(?i)(token|secret|password|passwd|authorization|cookie|credential|api[_-]?key|private[_-]?key|access[_-]?token|aes[_-]?key|corpsecret|signature|echostr)`)
 var bodyKey = regexp.MustCompile(`(?i)^(body|content|payload|raw|rawxml|xml|message|answer|prompt|response|text|media|attachment)$`)
+var mediaIDKey = regexp.MustCompile(`(?i)^media[_-]?id$`)
 
 func sanitizeValue(key string, v any) any {
 	if secretKey.MatchString(key) {
@@ -110,6 +111,13 @@ func sanitizeValue(key string, v any) any {
 	}
 	if bodyKey.MatchString(key) {
 		return "[REDACTED]"
+	}
+	if mediaIDKey.MatchString(key) {
+		s := fmt.Sprint(v)
+		if len(s) > 8 {
+			return s[:8] + "…"
+		}
+		return s
 	}
 	switch x := v.(type) {
 	case error:

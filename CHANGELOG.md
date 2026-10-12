@@ -4,6 +4,11 @@
 
 ## [未发布]
 
+### 新增
+
+- 入站文件/图片/语音：解析 `kf/sync_msg` 嵌套 `media_id`（`image`/`file`/`voice`），投递给 cc-connect 的加密 XML 带真实 `MsgType` + `MediaId`（`file` 另带 basename 安全的 `FileName`）；非法类型仍标 `UNSUPPORTED`。
+- 兼容接口 `GET /cgi-bin/media/get`：校验虚拟 `access_token` 后，用真实 corp token 代理企业微信临时素材下载；透传 body 与 `Content-Disposition`/`Content-Type`；单文件上限 25MB；日志只记 `media_id` 前缀与长度，不落 token/完整 media_id/二进制。
+
 ## v0.1.6 - 2026-10-12
 
 ### 诊断

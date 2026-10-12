@@ -325,6 +325,9 @@ func TestServerRequiresStoreAndFailsClosedWithoutAdapter(t *testing.T) {
 	if _, err := u.SendText(context.Background(), SendRequest{}); sendKind(err) != SendUnavailable {
 		t.Fatal("unavailable SendText")
 	}
+	if _, err := u.GetMedia(context.Background(), Binding{}, "m"); err == nil {
+		t.Fatal("unavailable GetMedia")
+	}
 }
 
 func TestBuildCallbackEncryptsEscapedXML(t *testing.T) {

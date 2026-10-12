@@ -125,7 +125,7 @@ func TestDeliveryTransitionFailuresStopAndKeepState(t *testing.T) {
 		state string
 	}
 	cases := map[string]tc{
-		"unsupported": {nil, state.InboxMessage{Type: "image", CreateTime: time.Now()}, state.InboxReceived},
+		"unsupported": {nil, state.InboxMessage{Type: "video", CreateTime: time.Now()}, state.InboxReceived},
 		"classify":    {nil, state.InboxMessage{Type: "text", CreateTime: time.Now()}, state.InboxReceived},
 		"held": {func(st *state.Store, c state.Customer, _ *DeliveryWorker) {
 			st.SetCustomerState(ctx, c.ID, state.CustomerHuman)

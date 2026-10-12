@@ -2,8 +2,11 @@ package wecom
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/whysmx/wecom-kf-bridge/state"
@@ -94,10 +97,7 @@ func (o SyncOptions) classify(ctx context.Context, page SyncResponse, now time.T
 		if m.SendTime > 0 {
 			ct = time.Unix(m.SendTime, 0)
 		}
-		payload := m.Content
-		if payload == "" && m.Text != nil {
-			payload = m.Text.Content
-		}
+		payload := syncPayload(m)
 		in := state.InboxMessage{ScopeID: o.Scope, BindingID: o.BindingID, ExternalMsgID: m.MsgID, CreateTime: ct, Source: fmt.Sprintf("origin:%d", m.Origin), Type: m.MsgType, ReceivedAt: now, UpdatedAt: now}
 		switch {
 		case o.OpenKfID != "" && m.OpenKfID != "" && m.OpenKfID != o.OpenKfID:
@@ -137,6 +137,60 @@ func (o SyncOptions) alert(event string, f map[string]any) {
 		f["scope"] = o.Scope
 		o.Logger.Log(event, f)
 	}
+}
+
+
+// syncPayload extracts the durable inbox payload for one sync_msg item.
+// Text keeps the plain body; image/file/voice store JSON media metadata
+// (media_id + optional basename-safe file_name). Other types leave payload empty.
+func syncPayload(m SyncMessage) string {
+	switch strings.ToLower(strings.TrimSpace(m.MsgType)) {
+	case "text":
+		if m.Text != nil && m.Text.Content != "" {
+			return m.Text.Content
+		}
+		return m.Content
+	case "image", "voice", "file":
+		mid, fname := m.NestedMedia()
+		if mid == "" {
+			return ""
+		}
+		return encodeMediaPayload(mid, fname)
+	default:
+		return ""
+	}
+}
+
+
+// encodeMediaPayload mirrors bridge.EncodeMediaPayload JSON shape so delivery
+// can DecodeMediaPayload without importing bridge from wecom (no import cycle).
+func encodeMediaPayload(mediaID, fileName string) string {
+	type payload struct {
+		MediaID  string `json:"media_id"`
+		FileName string `json:"file_name,omitempty"`
+	}
+	p := payload{MediaID: strings.TrimSpace(mediaID)}
+	if strings.TrimSpace(fileName) != "" {
+		p.FileName = safeFileName(fileName)
+	}
+	b, err := json.Marshal(p)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+func safeFileName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "file"
+	}
+	name = strings.ReplaceAll(name, "\\", "/")
+	base := filepath.Base(name)
+	if base == "." || base == ".." || base == "/" || base == "" {
+		return "file"
+	}
+	return base
 }
 
 // SyncAll follows integer has_more, not page length. It resumes from the
