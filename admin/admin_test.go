@@ -796,8 +796,10 @@ func TestWriteFailuresAreReported(t *testing.T) {
 		t.Fatal("mark failure", w.Code)
 	}
 	trig(t, e, "t2", "BEFORE INSERT ON handover_events")
-	if w := cl.post("/admin/customers/"+e.cust.ID+"/handover", url.Values{"revision": {itoa64(mustCustomer(t, e).Revision)}}); w.Code != http.StatusConflict {
-		t.Fatal("handover failure", w.Code)
+	// Official transfer already succeeded; local write failure is 503 + audit (#10).
+	w := cl.post("/admin/customers/"+e.cust.ID+"/handover", url.Values{"revision": {itoa64(mustCustomer(t, e).Revision)}})
+	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "官方已转人工") {
+		t.Fatalf("handover local failure: %d %s", w.Code, w.Body.String())
 	}
 	a := seedAccount(t, e, "wk7")
 	trig(t, e, "t3", "BEFORE UPDATE ON kf_accounts")
