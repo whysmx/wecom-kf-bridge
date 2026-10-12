@@ -171,6 +171,11 @@ func (w *Webhook) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 				return
 			}
 		}
+		// Acceptance log for live smoke: verify without querying the DB.
+		// LogFields redacts the pull token and omits customer identifiers.
+		fields := n.LogFields()
+		fields["method"] = "POST"
+		w.log("wecom_callback_accepted", fields)
 		rw.WriteHeader(http.StatusOK)
 		_, _ = rw.Write([]byte("success"))
 		return

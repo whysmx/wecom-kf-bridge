@@ -550,6 +550,15 @@ func (s *Server) send(ctx context.Context, b Binding, sc state.Customer, agent, 
 				_, _ = s.cfg.Store.MarkOutboxUnknown(context.WithoutCancel(ctx), o.ID, fmt.Sprintf("record_failed:%d/%d", i+1, len(chunks)))
 				return errAPI{ErrCodeUnknown, "send result unknown", http.StatusBadGateway}
 			}
+			// Live-smoke visibility: msgid + binding + errcode, never body/PII.
+			s.cfg.Logger.Log("wecom_send_msg_ok", map[string]any{
+				"binding_id": b.ID,
+				"msgid":      msgID,
+				"outbox_id":  o.ID,
+				"chunk":      i + 1,
+				"chunks":     len(chunks),
+				"errcode":    0,
+			})
 			continue
 		}
 		return s.sendFailed(ctx, o, sc.ID, i, len(chunks), err)
