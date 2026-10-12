@@ -4,17 +4,25 @@
 
 ## [未发布]
 
-### 修复
-
-- 配置 `bindings[].disabled: true` 对**已存在**的 SQLite 绑定生效：启动 bootstrap 会把 `active`/project/callback 与配置对齐并升 revision；`disabled→inactive` 记 `binding_config_disabled`。配置中的绑定以 JSON 为准（控制台对该绑定的停用/改绑在下次启动会被配置覆盖）；仅存在于库中的控制台绑定不受影响（#18）。
-- SQLite WAL 下 `BEGIN DEFERRED` 读后写不再返回 `SQLITE_BUSY_SNAPSHOT`（517）：`OpenWithOptions` DSN 增加 `_txlock=immediate`，写锁冲突由 `busy_timeout` 等待；连接钩子（foreign_keys / busy_timeout）不变（#11）。
-- 空 `sync_msg` 页（count=0 且 inserted=0）不再打 `wecom_sync_page_ok` INFO，避免空闲轮询刷盘；有消息或有入库的页仍记（#13）。
-- 后台转人工：官方已成功但本地 `BeginHandover`/`SetHandoverStatus` 失败（含 SQLITE_BUSY/517）时，对 BUSY 有限重试；仍失败返回 **503**（不再误导性 409），flash 明确「官方已转人工，本地状态保存失败…」，并写审计 `official_ok_local_failed`（#10）。
+## v0.1.7 - 2026-10-12
 
 ### 新增
 
-- 入站文件/图片/语音：解析 `kf/sync_msg` 嵌套 `media_id`（`image`/`file`/`voice`），投递给 cc-connect 的加密 XML 带真实 `MsgType` + `MediaId`（`file` 另带 basename 安全的 `FileName`）；非法类型仍标 `UNSUPPORTED`。
-- 兼容接口 `GET /cgi-bin/media/get`：校验虚拟 `access_token` 后，用真实 corp token 代理企业微信临时素材下载；透传 body 与 `Content-Disposition`/`Content-Type`；单文件上限 25MB；日志只记 `media_id` 前缀与长度，不落 token/完整 media_id/二进制。
+- 入站文件/图片/语音：解析 `kf/sync_msg` 嵌套 `media_id`（`image`/`file`/`voice`），投递给 cc-connect 的加密 XML 带真实 `MsgType` + `MediaId`（`file` 另带 basename 安全的 `FileName`）；非法类型仍标 `UNSUPPORTED`（#17）。
+- 兼容接口 `GET /cgi-bin/media/get`：校验虚拟 `access_token` 后，用真实 corp token 代理企业微信临时素材下载；透传 body 与 `Content-Disposition`/`Content-Type`；单文件上限 25MB；日志只记 `media_id` 前缀与长度，不落 token/完整 media_id/二进制（#17）。
+
+### 修复
+
+- 配置 `bindings[].disabled: true` 对**已存在**的 SQLite 绑定生效：启动 bootstrap 会把 `active`/project/callback 与配置对齐并升 revision；`disabled→inactive` 记 `binding_config_disabled`。配置中的绑定以 JSON 为准（控制台对该绑定的停用/改绑在下次启动会被配置覆盖）；仅存在于库中的控制台绑定不受影响（#18 / #19）。
+- SQLite WAL 下 `BEGIN DEFERRED` 读后写不再返回 `SQLITE_BUSY_SNAPSHOT`（517）：`OpenWithOptions` DSN 增加 `_txlock=immediate`，写锁冲突由 `busy_timeout` 等待；连接钩子（foreign_keys / busy_timeout）不变（#11 / #20）。
+- 后台转人工：官方已成功但本地 `BeginHandover`/`SetHandoverStatus` 失败（含 SQLITE_BUSY/517）时，对 BUSY 有限重试；仍失败返回 **503**（不再误导性 409），flash 明确「官方已转人工，本地状态保存失败…」，并写审计 `official_ok_local_failed`（#10 / #21）。
+- 空 `sync_msg` 页（count=0 且 inserted=0）不再打 `wecom_sync_page_ok` INFO，避免空闲轮询刷盘；有消息或有入库的页仍记（#13 / #23）。
+
+### 已知不足
+
+- 部分企业应用对 `kf/service_state/get` 仍返回 48002（无权限）；文本联调依赖 `treat_48002_as_ai_eligible`，**严禁生产开启**。
+- 一对一会话能力在上游（cc-connect / Codex），本网关不实现。
+- 管理后台 Web 配置页列入下一阶段，本版本未包含。
 
 ## v0.1.6 - 2026-10-12
 
