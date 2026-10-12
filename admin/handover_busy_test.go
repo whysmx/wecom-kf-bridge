@@ -32,8 +32,50 @@ func TestRetrySQLiteBusy(t *testing.T) {
 	}); !errors.Is(err, perm) || n.Load() != 1 {
 		t.Fatalf("non-busy should not retry: err=%v n=%d", err, n.Load())
 	}
-	if !isSQLiteBusy(errors.New("database is locked (517)")) || isSQLiteBusy(perm) {
-		t.Fatal("isSQLiteBusy")
+	if isSQLiteBusy(nil) || isSQLiteBusy(perm) {
+		t.Fatal("isSQLiteBusy nil/perm")
+	}
+	for _, msg := range []string{"database is locked", "x (517)", "BUSY_SNAPSHOT", "SQLITE_BUSY wait"} {
+		if !isSQLiteBusy(errors.New(msg)) {
+			t.Fatalf("want busy: %s", msg)
+		}
+	}
+	// attempts < 1 clamps to 1
+	n.Store(0)
+	if err := retrySQLiteBusy(ctx, 0, func() error {
+		n.Add(1)
+		return errors.New("database is locked")
+	}); err == nil || n.Load() != 1 {
+		t.Fatalf("clamp attempts: err=%v n=%d", err, n.Load())
+	}
+	// exhaust retries while still busy
+	n.Store(0)
+	busy := errors.New("database is locked (517)")
+	if err := retrySQLiteBusy(ctx, 3, func() error {
+		n.Add(1)
+		return busy
+	}); !errors.Is(err, busy) || n.Load() != 3 {
+		t.Fatalf("exhaust: err=%v n=%d", err, n.Load())
+	}
+	// cancelled before first attempt
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := retrySQLiteBusy(canceled, 3, func() error { return nil }); !errors.Is(err, context.Canceled) {
+		t.Fatalf("pre-cancel: %v", err)
+	}
+	// cancelled during backoff after a busy error
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	n.Store(0)
+	go func() {
+		for n.Load() == 0 {
+		}
+		cancel2()
+	}()
+	if err := retrySQLiteBusy(ctx2, 5, func() error {
+		n.Add(1)
+		return busy
+	}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("backoff-cancel: %v", err)
 	}
 }
 
