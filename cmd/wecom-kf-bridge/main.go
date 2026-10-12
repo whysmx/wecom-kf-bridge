@@ -28,6 +28,7 @@ func runContext(ctx context.Context, configPath string, out interface{ Write([]b
 		logger.Error("config_invalid", err, nil)
 		return 1
 	}
+	cfg.ConfigPath = configPath
 	gw, err := build(ctx, cfg, logger)
 	if err != nil {
 		logger.Error("runtime_init_failed", err, nil)

@@ -161,7 +161,7 @@ func (a *WeComAdapter) ServiceState(ctx context.Context, b bridge.Binding, c bri
 			f := map[string]any{"binding_id": b.ID, "open_kfid": r.openKfID, "errcode": ae.Code, "errmsg": ae.Message, "http_status": ae.HTTPStatus}
 			if ae.Code == 48002 {
 				f["hint"] = "api forbidden: the calling app must be in 微信客服「可调用接口的应用」, the kf account must be set to 通过API管理, and its servicers must be in the app's visible range"
-				if a.treat48002AsAI {
+				if a.treat48002Enabled() {
 					// Distinguishable from a real official AI mapping: send
 					// may proceed, auto-recover must not clear a fence.
 					f["effect"] = "treat_48002_as_ai_eligible: send may proceed as AI_ELIGIBLE_48002_BYPASS; auto-recover will not clear fences (joint-debug only; never production)"
@@ -175,7 +175,7 @@ func (a *WeComAdapter) ServiceState(ctx context.Context, b bridge.Binding, c bri
 		}
 		return "", err
 	}
-	if st, ok := a.states[resp.ServiceState]; ok {
+	if st, ok := a.mapServiceState(resp.ServiceState); ok {
 		if st != state.CustomerAIEligible {
 			a.log("service_state_not_ai", map[string]any{"binding_id": b.ID, "service_state": resp.ServiceState, "mapped": st})
 		}
@@ -229,4 +229,24 @@ func classifySendError(err error) error {
 		return &bridge.SendError{Kind: bridge.SendUnavailable, Err: err}
 	}
 	return &bridge.SendError{Kind: bridge.SendUnknown, Err: err}
+}
+
+func (a *WeComAdapter) setEditableWeCom(treat48002 bool, states map[int]string) {
+	a.rmu.Lock()
+	defer a.rmu.Unlock()
+	a.treat48002AsAI = treat48002
+	a.states = states
+}
+
+func (a *WeComAdapter) treat48002Enabled() bool {
+	a.rmu.RLock()
+	defer a.rmu.RUnlock()
+	return a.treat48002AsAI
+}
+
+func (a *WeComAdapter) mapServiceState(n int) (string, bool) {
+	a.rmu.RLock()
+	defer a.rmu.RUnlock()
+	st, ok := a.states[n]
+	return st, ok
 }

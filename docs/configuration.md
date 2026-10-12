@@ -30,6 +30,18 @@
 | `wecom.allow_insecure_http` | 仅测试/本地 fake 允许 http API；启动会打安全告警 |
 | `wecom.treat_48002_as_ai_eligible` | **仅联调**。默认 `false`。为 `true` 时，若 `kf/service_state/get` 返回官方 errcode **48002**（api forbidden），记 WARNING（无 PII）并返回可区分结果 `AI_ELIGIBLE_48002_BYPASS`：**仅发送路径**按可发送处理（不再 70007）；**入站 auto-recover 不得**据此清除自动栅栏。本地已是 HUMAN/WAITING 时发送仍拦截。其它 errcode / 网络错误不变。**严禁生产开启**。 |
 
+## 2.1 管理后台在线保存（系统设置页）
+
+`/admin/settings` 可编辑并持久化以下项（POST `/admin/settings/save`，需 CSRF + 会话 + **二次认证**）：
+
+| 字段 | 说明 |
+|---|---|
+| `wecom.treat_48002_as_ai_eligible` | 联调旁路；保存强制审计并在 UI 显示危险提示；默认 `false`；**严禁生产开启** |
+| `wecom.service_state_map` | 官方 state → 内部状态映射（表单为非空 JSON 对象；空串/`{}` 拒绝，避免误清空） |
+| `server.public_base_url` | 导出给 cc-connect 的 `api_base_url` |
+
+持久化：安全写回 `WECOM_KF_BRIDGE_CONFIG` 指向的 `config.json`，并**热加载**到运行中的适配器/控制台（无需重启）。Secret/Token/AES 仍只显示环境变量名，不可在此页改明文（轮换走绑定页）。
+
 ## 3. 管理后台（`admin`）
 
 未配置 `admin` 则不启动后台。启用时：

@@ -194,7 +194,7 @@ func TestIdempotencyReplayAndMismatch(t *testing.T) {
 func TestStepUpRequiredForDangerousActions(t *testing.T) {
 	e := newEnv(t)
 	cl := e.login()
-	for _, p := range []string{"/admin/accounts/wk1/delete", "/admin/bindings/b1/rebind", "/admin/bindings/b1/rotate", "/admin/bindings/b1/export"} {
+	for _, p := range []string{"/admin/accounts/wk1/delete", "/admin/bindings/b1/rebind", "/admin/bindings/b1/rotate", "/admin/bindings/b1/export", "/admin/settings/save"} {
 		if w := cl.post(p, url.Values{"revision": {"1"}}); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "二次认证") {
 			t.Errorf("%s without step-up -> %d", p, w.Code)
 		}

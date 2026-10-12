@@ -109,6 +109,9 @@ type fakeRuntime struct {
 	applyErr  error
 	verifyErr error
 	testErr   error
+	editable  EditableSettings
+	saveErr   error
+	saved     []EditableSettings
 }
 
 func (f *fakeRuntime) ApplyBinding(_ context.Context, b state.Binding, c *Credentials) error {
@@ -127,6 +130,21 @@ func (f *fakeRuntime) TestURL(context.Context, string) error { return f.testErr 
 func (f *fakeRuntime) Verify(context.Context, string) error  { return f.verifyErr }
 func (f *fakeRuntime) Status(context.Context) map[string]string {
 	return map[string]string{"gateway": "ok", "wecom_api": "ok", "last_sync": "—"}
+}
+func (f *fakeRuntime) EditableSettings() EditableSettings {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.editable
+}
+func (f *fakeRuntime) SaveSettings(_ context.Context, s EditableSettings) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.saveErr != nil {
+		return f.saveErr
+	}
+	f.editable = s
+	f.saved = append(f.saved, s)
+	return nil
 }
 
 type env struct {
@@ -162,7 +180,9 @@ func newEnv(t *testing.T, mut ...func(*Config)) *env {
 	cu, err := st.EnsureCustomer(ctx, "e1", "b1", "ext-secret-id")
 	must(t, err)
 	hash, _ := bcrypt.GenerateFromPassword([]byte(password), bcrypt.MinCost)
-	e := &env{t: t, st: st, kf: &fakeKF{listErr: map[int]error{}, states: map[string]int{}}, rt: &fakeRuntime{}, now: time.Unix(1_800_000_000, 0), cust: cu}
+	e := &env{t: t, st: st, kf: &fakeKF{listErr: map[int]error{}, states: map[string]int{}}, rt: &fakeRuntime{editable: EditableSettings{
+		ServiceStateMap: map[string]string{"1": state.CustomerAIEligible, "2": state.CustomerWaitingHuman, "3": state.CustomerHuman},
+	}}, now: time.Unix(1_800_000_000, 0), cust: cu}
 	cfg := Config{Store: st, KF: e.kf, Runtime: e.rt, PasswordHash: hash, Origin: origin, EnterpriseID: "e1", CompanyName: "测试企业", CorpID: "ww1234567890", Clock: e.clock,
 		ServiceStateMap: map[int]string{1: state.CustomerAIEligible, 2: state.CustomerWaitingHuman, 3: state.CustomerHuman},
 		Settings:        []Setting{{"企业", "Secret 环境变量", "WECOM_SECRET"}}}
