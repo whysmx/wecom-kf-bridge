@@ -503,6 +503,11 @@ func (c *Console) transfer(r *http.Request, cu state.Customer, internal string, 
 // customerHandover transfers the session officially first and only then
 // pauses AI locally. If the official result is uncertain, AI is paused
 // (fail-safe) and the customer is marked UNKNOWN.
+//
+// When the official side already succeeded but local SQLite writes fail
+// (including SQLITE_BUSY / BUSY_SNAPSHOT 517), return 503 with an explicit
+// flash and audit outcome official_ok_local_failed — never a misleading 409
+// that implies the official transfer did not happen (#10).
 func (c *Console) customerHandover(r *http.Request, _ *session) result {
 	cu, res := c.customer(r)
 	if res != nil {
@@ -517,19 +522,69 @@ func (c *Console) customerHandover(r *http.Request, _ *session) result {
 	if !certain {
 		official, local = state.CustomerUnknown, state.CustomerUnknown
 	}
-	if _, err := c.cfg.Store.BeginHandover(r.Context(), cu.ID, "admin_handover"); err != nil {
-		return result{status: http.StatusConflict, flash: "转人工失败：" + err.Error()}
+	ctx := r.Context()
+	var beginErr error
+	if err := retrySQLiteBusy(ctx, 5, func() error {
+		_, beginErr = c.cfg.Store.BeginHandover(ctx, cu.ID, "admin_handover")
+		return beginErr
+	}); err != nil {
+		c.audit(r, "customer", cu.ID, "handover", "official_ok_local_failed", err.Error(), cu.Revision)
+		return result{status: http.StatusServiceUnavailable, flash: "官方已转人工，本地状态保存失败，AI 可能未暂停，请重试/核实"}
 	}
-	if err := c.cfg.Store.SetHandoverStatus(r.Context(), cu.ID, local, "admin_handover"); err != nil {
-		return result{status: http.StatusServiceUnavailable, flash: "转人工状态保存失败"}
+	if err := retrySQLiteBusy(ctx, 5, func() error {
+		return c.cfg.Store.SetHandoverStatus(ctx, cu.ID, local, "admin_handover")
+	}); err != nil {
+		c.audit(r, "customer", cu.ID, "handover", "official_ok_local_failed", err.Error(), cu.Revision)
+		return result{status: http.StatusServiceUnavailable, flash: "官方已转人工，本地状态保存失败，AI 可能未暂停，请重试/核实"}
 	}
-	_ = c.cfg.Store.SetOfficialStatus(r.Context(), cu.ID, official)
+	_ = c.cfg.Store.SetOfficialStatus(ctx, cu.ID, official)
 	if !certain {
 		c.audit(r, "customer", cu.ID, "handover", "unknown", "", cu.Revision)
 		return result{location: "/admin/customers?q=" + cu.ID, flash: "官方转接结果未知（UNKNOWN）：已在本地暂停 AI，请在企业微信中核实"}
 	}
 	c.audit(r, "customer", cu.ID, "handover", "ok", "official="+official, cu.Revision)
 	return result{location: "/admin/customers?q=" + cu.ID, flash: "已转人工（官方已确认，本地暂停 AI 发送）"}
+}
+
+// isSQLiteBusy reports lock errors that may clear on a short retry, including
+// SQLITE_BUSY_SNAPSHOT (517) which busy_timeout does not cover (#11).
+func isSQLiteBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "database is locked") ||
+		strings.Contains(msg, "(517)") ||
+		strings.Contains(msg, "BUSY_SNAPSHOT") ||
+		strings.Contains(msg, "SQLITE_BUSY")
+}
+
+// retrySQLiteBusy runs fn up to attempts times when it returns a SQLite busy /
+// snapshot lock. Non-busy errors and ctx cancellation stop immediately.
+func retrySQLiteBusy(ctx context.Context, attempts int, fn func() error) error {
+	if attempts < 1 {
+		attempts = 1
+	}
+	var err error
+	for i := 0; i < attempts; i++ {
+		if err = ctx.Err(); err != nil {
+			return err
+		}
+		err = fn()
+		if err == nil || !isSQLiteBusy(err) {
+			return err
+		}
+		// Short linear backoff; keep total wait small relative to HTTP request.
+		delay := time.Duration(5*(i+1)) * time.Millisecond
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return err
 }
 
 // customerRecover returns the session to the AI assistant officially, reads

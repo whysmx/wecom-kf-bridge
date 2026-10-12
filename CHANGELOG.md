@@ -9,6 +9,7 @@
 - 配置 `bindings[].disabled: true` 对**已存在**的 SQLite 绑定生效：启动 bootstrap 会把 `active`/project/callback 与配置对齐并升 revision；`disabled→inactive` 记 `binding_config_disabled`。配置中的绑定以 JSON 为准（控制台对该绑定的停用/改绑在下次启动会被配置覆盖）；仅存在于库中的控制台绑定不受影响（#18）。
 - SQLite WAL 下 `BEGIN DEFERRED` 读后写不再返回 `SQLITE_BUSY_SNAPSHOT`（517）：`OpenWithOptions` DSN 增加 `_txlock=immediate`，写锁冲突由 `busy_timeout` 等待；连接钩子（foreign_keys / busy_timeout）不变（#11）。
 - 空 `sync_msg` 页（count=0 且 inserted=0）不再打 `wecom_sync_page_ok` INFO，避免空闲轮询刷盘；有消息或有入库的页仍记（#13）。
+- 后台转人工：官方已成功但本地 `BeginHandover`/`SetHandoverStatus` 失败（含 SQLITE_BUSY/517）时，对 BUSY 有限重试；仍失败返回 **503**（不再误导性 409），flash 明确「官方已转人工，本地状态保存失败…」，并写审计 `official_ok_local_failed`（#10）。
 
 ### 新增
 
