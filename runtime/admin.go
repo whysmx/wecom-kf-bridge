@@ -16,17 +16,42 @@ import (
 	"github.com/whysmx/wecom-kf-bridge/wecom"
 )
 
-// bootstrapBinding inserts a configured binding the first time. Once it
-// exists, SQLite (changed through the console) wins for mutable fields;
-// a changed identity is refused (#24).
-func (g *Gateway) bootstrapBinding(ctx context.Context, b state.Binding) (state.Binding, error) {
+// bootstrapBinding inserts a configured binding the first time. When the
+// row already exists, identity (enterprise_id / open_kfid) stays immutable
+// (#24); mutable fields from config — active (!disabled), project_id,
+// callback_url — are applied and revision bumps when anything changes (#18).
+// disabled:true → Active=false is the kill switch (logged). disabled:false
+// also writes Active=true, so a console disable of a config-listed binding
+// is overwritten on the next start (config wins for listed bindings).
+func (g *Gateway) bootstrapBinding(ctx context.Context, b state.Binding, logger Logger) (state.Binding, error) {
+	if logger == nil {
+		logger = nopRuntimeLogger{}
+	}
 	cur, err := g.Store.Binding(ctx, b.ID)
 	switch {
 	case err == nil:
 		if cur.EnterpriseID != b.EnterpriseID || cur.OpenKfID != b.OpenKfID {
 			return cur, fmt.Errorf("binding %s: %w", b.ID, state.ErrIdentityChanged)
 		}
-		return cur, nil
+		if cur.ProjectID == b.ProjectID && cur.CallbackURL == b.CallbackURL && cur.Active == b.Active {
+			return cur, nil
+		}
+		wasActive := cur.Active
+		nb, err := g.Store.UpdateBinding(ctx, cur.ID, cur.Revision, func(x *state.Binding) {
+			x.ProjectID = b.ProjectID
+			x.CallbackURL = b.CallbackURL
+			x.Active = b.Active
+		})
+		if err != nil {
+			return cur, err
+		}
+		if wasActive && !nb.Active {
+			logger.Log("binding_config_disabled", map[string]any{
+				"binding_id": nb.ID,
+				"revision":   nb.Revision,
+			})
+		}
+		return nb, nil
 	case errors.Is(err, state.ErrNotFound):
 		if err := g.Store.PutBinding(ctx, b); err != nil {
 			return b, err

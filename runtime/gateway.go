@@ -125,7 +125,7 @@ func (g *Gateway) wire(ctx context.Context, cfg Config, logger Logger) error {
 		if rev <= 0 {
 			rev = 1
 		}
-		sb, err := g.bootstrapBinding(ctx, state.Binding{ID: b.ID, EnterpriseID: b.EnterpriseID, OpenKfID: b.OpenKfID, ProjectID: b.ProjectID, CallbackURL: b.CallbackURL, Active: !b.Disabled, Revision: rev})
+		sb, err := g.bootstrapBinding(ctx, state.Binding{ID: b.ID, EnterpriseID: b.EnterpriseID, OpenKfID: b.OpenKfID, ProjectID: b.ProjectID, CallbackURL: b.CallbackURL, Active: !b.Disabled, Revision: rev}, logger)
 		if err != nil {
 			return err
 		}

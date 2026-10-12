@@ -52,6 +52,7 @@
 | `virtual_corp_id` / `agent_id` | 给 cc-connect 的虚拟企业与应用 ID |
 | `virtual_secret_env` 等 | 见上文「首次初始化」 |
 | `callback_url` | 网关访问 cc-connect 的完整回调 URL；host:port 必须落在 `callback_targets` |
+| `disabled` | 默认 `false`。为 `true` 时该配置绑定启动后为 inactive（停发令牌、栅栏在途发送）。对**已存在**行同样生效（升 revision）。配置里列出的绑定每次启动会把 `active`/project/callback 与 JSON 对齐；仅库中的控制台绑定不受此字段影响 |
 
 一次性导出（管理后台）按 cc-connect WeChat Work 表单给出：`corp_id`、`corp_secret`、`agent_id`、`callback_token`、`callback_aes_key`、`port`、`callback_path`、`api_base_url`、`allow_from`。
 
