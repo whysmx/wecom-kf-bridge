@@ -246,3 +246,20 @@ func TestSyncAllLogsPageOK(t *testing.T) {
 		}
 	}
 }
+
+func TestSyncAllSkipsEmptyPageOKLog(t *testing.T) {
+	st := syncStore(t)
+	l := &syncLog{}
+	srv, _ := pagedServer(t, SyncResponse{ErrCode: 0, NextCursor: "idle", HasMore: 0, Messages: nil})
+	res, err := NewClient(srv.URL, "c", "s").SyncAll(context.Background(), opts(st, l))
+	if err != nil || res.Pages != 1 || res.Messages != 0 || res.Inserted != 0 {
+		t.Fatalf("%+v %v", res, err)
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, e := range l.events {
+		if e == "wecom_sync_page_ok" {
+			t.Fatalf("empty page must not emit wecom_sync_page_ok INFO: %v", l.events)
+		}
+	}
+}
