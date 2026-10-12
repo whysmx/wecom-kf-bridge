@@ -10,6 +10,7 @@
 
 ### 新增
 
+- 管理后台支持 `admin.listen` 绑定 `0.0.0.0`（须显式 `admin.origin` + `insecure_cookie` 方可明文 http）；新增 `admin.lan_no_login`（默认 `true`）：私网/回环客户端免密进控制台，CSRF/同源保护保留，免登会话跳过 step-up 输密，审计标明 `admin-lan@` / `lan_no_login`；非私网仍须密码登录。
 - 管理后台「系统设置」可在线保存：`wecom.treat_48002_as_ai_eligible`（二次认证 + 危险提示 + 强制审计）、`wecom.service_state_map`、`server.public_base_url`；写回 `config.json` 并热加载，无需重启；密钥类字段仍只显示环境变量名（#25）。
 
 ## v0.1.7 - 2026-10-12

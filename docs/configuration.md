@@ -48,13 +48,14 @@
 
 | 字段 | 说明 |
 |---|---|
-| `listen` | 独立地址，须与 `server.public_listen` 不同；默认示例 `127.0.0.1:8091` |
-| `password_hash_env` | bcrypt 密码哈希所在环境变量（可用 `htpasswd -bnBC 12 "" '<密码>' \| tr -d ':\\n'` 生成） |
-| `origin` | 浏览器 Origin；默认 Secure Cookie 时须为 `https://…` |
-| `insecure_cookie` | 仅当 `listen` 为回环时可设 `true`，以支持明文 http 本地访问 |
+| `listen` | 独立地址，须与 `server.public_listen` 不同；可绑 `127.0.0.1` 或 `0.0.0.0`（局域网）；默认示例 `127.0.0.1:8091` |
+| `password_hash_env` | bcrypt 密码哈希所在环境变量（可用 `htpasswd -bnBC 12 "" '<密码>' \| tr -d ':\\n'` 生成）；外网/非私网客户端仍走登录页 |
+| `origin` | 浏览器可访问的 Origin（如 `http://192.168.1.10:8091`）。`listen` 为 `0.0.0.0`/`::` 时**必须**显式配置；回环监听时默认为 `http://`+listen |
+| `insecure_cookie` | 明文 http 时须为 `true`（回环或局域网均可）；https Origin 时保持 `false`（Secure Cookie） |
+| `lan_no_login` | 默认 `true`。为 `true` 时，TCP 对端为回环/RFC1918 私网/链路本地的客户端免密进入控制台（自动建会话）；非私网仍须密码。写操作仍校验 CSRF/同源；免登会话跳过二次输密（step-up），审计 Actor 为 `admin-lan@…`、登录摘要 `lan_no_login`。不信任 `X-Forwarded-For` |
 | `company_name` / `session_ttl_minutes` / `max_sessions` | 显示名与会话策略 |
 
-启用后台时配置中须恰好一个企业。
+启用后台时配置中须恰好一个企业。管理 listener 仅本机或受控局域网；不要暴露到公网。
 
 ## 4. 绑定字段（配置或后台）
 
@@ -81,4 +82,4 @@ export WECOM_KF_BRIDGE_MASTER_KEY="$(openssl rand -base64 32)"
 - 管理 listener：仅本机/受控网络；不要暴露到公网。
 - 发布产物与校验和见 GitHub Releases；版本说明见 [CHANGELOG.md](../CHANGELOG.md)。
 
-字段级约束以进程启动时的 `Validate` 为准：非法 CIDR、空企业、http API（未显式 insecure）、非回环却 `insecure_cookie` 等都会导致进程拒绝启动。
+字段级约束以进程启动时的 `Validate` 为准：非法 CIDR、空企业、http API（未显式 insecure）、http Origin 却未设 `insecure_cookie`、`0.0.0.0` 监听却未设可访问 `origin` 等都会导致进程拒绝启动。

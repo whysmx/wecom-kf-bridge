@@ -230,6 +230,29 @@ func (e *env) do(method, path string, form url.Values, hdr map[string]string, co
 	return w
 }
 
+func (e *env) doCustom(method, path string, form url.Values, hdr map[string]string, cookie, remote string) *httptest.ResponseRecorder {
+	var body *strings.Reader
+	if form != nil {
+		body = strings.NewReader(form.Encode())
+	} else {
+		body = strings.NewReader("")
+	}
+	r := httptest.NewRequest(method, path, body)
+	r.RemoteAddr = remote
+	if form != nil {
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+	if cookie != "" {
+		r.AddCookie(&http.Cookie{Name: cookieName, Value: cookie})
+	}
+	for k, v := range hdr {
+		r.Header.Set(k, v)
+	}
+	w := httptest.NewRecorder()
+	e.c.Handler().ServeHTTP(w, r)
+	return w
+}
+
 var csrfRe = regexp.MustCompile(`name="csrf_token" value="([0-9a-f]+)"`)
 
 func (e *env) login() *client {

@@ -79,7 +79,7 @@ type Config struct {
 type AdminConfig struct {
 	Listen string `json:"listen"`
 	// Origin is the exact browser origin, e.g. https://admin.example:8443
-	// (default http://<listen>).
+	// (default http://<listen>). Required when listen is 0.0.0.0/::.
 	Origin string `json:"origin"`
 	// PasswordHashEnv names the env var holding the bcrypt password hash.
 	PasswordHashEnv   string `json:"password_hash_env"`
@@ -87,8 +87,20 @@ type AdminConfig struct {
 	SessionTTLMinutes int    `json:"session_ttl_minutes"`
 	MaxSessions       int    `json:"max_sessions"`
 	// InsecureCookie drops the Secure cookie flag so a plain-http console
-	// works. Only allowed when listen is a loopback address (#34).
+	// works. Required for http:// origins (loopback or LAN).
 	InsecureCookie bool `json:"insecure_cookie"`
+	// LanNoLogin, when true (default), lets loopback/private/link-local
+	// clients enter the console without a password. Non-private IPs still
+	// need login. Nil means default true; set false to force password.
+	LanNoLogin *bool `json:"lan_no_login"`
+}
+
+// LanNoLoginEnabled reports whether LAN clients skip the login wall.
+func (a AdminConfig) LanNoLoginEnabled() bool {
+	if a.LanNoLogin == nil {
+		return true
+	}
+	return *a.LanNoLogin
 }
 
 func isLoopbackListen(addr string) bool {
@@ -101,6 +113,20 @@ func isLoopbackListen(addr string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// listenNeedsExplicitOrigin is true when the listen host is not a usable
+// browser host (all-interfaces bind), so admin.origin must be set.
+func listenNeedsExplicitOrigin(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return true
+	}
+	switch host {
+	case "", "0.0.0.0", "::":
+		return true
+	}
+	return false
 }
 
 type CallbackTarget struct {
@@ -182,6 +208,10 @@ func (c *Config) defaults() {
 	if w.MaxSyncPages <= 0 {
 		w.MaxSyncPages = 100
 	}
+	if c.Admin.Listen != "" && c.Admin.LanNoLogin == nil {
+		v := true
+		c.Admin.LanNoLogin = &v
+	}
 }
 
 func (c Config) Validate() error {
@@ -198,13 +228,15 @@ func (c Config) Validate() error {
 		}
 		origin := c.Admin.Origin
 		if origin == "" {
-			origin = "http://" + c.Admin.Listen
+			if listenNeedsExplicitOrigin(c.Admin.Listen) {
+				errs = append(errs, "admin.origin required when admin.listen binds all interfaces (0.0.0.0/::); set a browser-reachable Origin e.g. http://192.168.x.x:8091")
+			} else {
+				origin = "http://" + c.Admin.Listen
+			}
 		}
 		switch {
-		case c.Admin.InsecureCookie && !isLoopbackListen(c.Admin.Listen):
-			errs = append(errs, "admin.insecure_cookie is only allowed for a loopback admin.listen")
-		case !c.Admin.InsecureCookie && !strings.HasPrefix(origin, "https://"):
-			errs = append(errs, "admin.origin must be https:// (Secure cookie); for plain http on loopback set admin.insecure_cookie")
+		case origin != "" && !c.Admin.InsecureCookie && !strings.HasPrefix(origin, "https://"):
+			errs = append(errs, "admin.origin must be https:// (Secure cookie); for plain http set admin.insecure_cookie")
 		}
 	}
 	if c.Server.PublicBaseURL != "" {
