@@ -70,10 +70,15 @@ func (l *StructuredLogger) write(level, event string, fields map[string]any) {
 	if l.Clock != nil {
 		ts = l.Clock().UTC()
 	}
-	record := map[string]any{"ts": ts.Format(time.RFC3339Nano), "level": level, "event": event}
+	// Apply caller fields first, then reserved keys so a field named "event"
+	// (or "ts"/"level") cannot overwrite the structured event name/metadata.
+	record := map[string]any{}
 	for k, v := range SanitizeFields(fields) {
 		record[k] = v
 	}
+	record["ts"] = ts.Format(time.RFC3339Nano)
+	record["level"] = level
+	record["event"] = event
 	data, err := json.Marshal(record)
 	if err != nil {
 		return
