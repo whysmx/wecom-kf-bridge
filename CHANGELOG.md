@@ -4,6 +4,10 @@
 
 ## [未发布]
 
+### 修复
+
+- 空 `sync_msg` 页（count=0 且 inserted=0）不再打 `wecom_sync_page_ok` INFO，避免空闲轮询刷盘；有消息或有入库的页仍记（#13）。
+
 ### 新增
 
 - 入站文件/图片/语音：解析 `kf/sync_msg` 嵌套 `media_id`（`image`/`file`/`voice`），投递给 cc-connect 的加密 XML 带真实 `MsgType` + `MediaId`（`file` 另带 basename 安全的 `FileName`）；非法类型仍标 `UNSUPPORTED`。

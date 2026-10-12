@@ -247,14 +247,18 @@ func (c *Client) SyncAll(ctx context.Context, opts SyncOptions) (SyncResult, err
 			return result, err
 		}
 		count := len(page.Messages) + len(page.Bad)
-		opts.alert("wecom_sync_page_ok", map[string]any{
-			"binding_id": opts.BindingID,
-			"count":      count,
-			"has_more":   page.HasMore == 1,
-			"page":       pageNo,
-			"inserted":   n,
-			"errcode":    page.ErrCode,
-		})
+		// Idle/empty pages (periodic sync with nothing new) would flood INFO
+		// disks; only accept-path pages with work are logged (#13).
+		if count > 0 || n > 0 {
+			opts.alert("wecom_sync_page_ok", map[string]any{
+				"binding_id": opts.BindingID,
+				"count":      count,
+				"has_more":   page.HasMore == 1,
+				"page":       pageNo,
+				"inserted":   n,
+				"errcode":    page.ErrCode,
+			})
+		}
 		result.Pages++
 		result.Messages += count
 		result.Inserted += n
