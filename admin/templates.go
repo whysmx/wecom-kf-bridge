@@ -52,6 +52,7 @@ const layout = `{{define "form"}}<input type="hidden" name="csrf_token" value="{
 {{template "bottom"}}{{end}}
 
 {{define "bindings"}}{{template "top" .}}<h1>转发绑定</h1>
+<p>运行时操作（启用/停用/改绑）改 SQLite；下列「配置绑定」表单写回 <code>config.json</code> 并<strong>热加载</strong>（需二次认证）。<code>config.disabled</code> 保存后以配置为准对齐 Active；身份字段与密钥 env 只读。改绑会换客户代际，配置保存不会。</p>
 <table><tr><th>ID</th><th>项目</th><th>open_kfid</th><th>callback URL</th><th>启用</th><th>revision</th><th>操作</th></tr>
 {{range .Data.Bindings}}<tr><td>{{.ID}}</td><td>{{.ProjectID}}</td><td>{{.OpenKfID}}</td><td>{{.CallbackURL}}</td><td>{{.Active}}</td><td>{{.Revision}}</td><td>
 {{if .Active}}<form method="post" action="/admin/bindings/{{.ID}}/disable">{{template "form" $}}<input type="hidden" name="revision" value="{{.Revision}}"><button>停用</button></form>{{else}}<form method="post" action="/admin/bindings/{{.ID}}/enable">{{template "form" $}}<input type="hidden" name="revision" value="{{.Revision}}"><button>启用</button></form>{{end}}
@@ -59,6 +60,20 @@ const layout = `{{define "form"}}<input type="hidden" name="csrf_token" value="{
 <form method="post" action="/admin/bindings/{{.ID}}/rotate">{{template "form" $}}<input type="hidden" name="revision" value="{{.Revision}}"><button>轮换虚拟凭证</button></form>
 <form method="post" action="/admin/bindings/{{.ID}}/export">{{template "form" $}}<button>一次性导出凭证</button></form>
 <form method="post" action="/admin/bindings/{{.ID}}/rebind">{{template "form" $}}<input type="hidden" name="revision" value="{{.Revision}}">项目 <input name="project_id" value="{{.ProjectID}}"> callback <input name="callback_url" value="{{.CallbackURL}}"><button>改绑（全部客户换代际）</button></form>
+{{if .HasConfig}}
+<div class="config-edit"><b>配置绑定（config.json）</b>
+<form method="post" action="/admin/bindings/{{.ID}}/config-save">{{template "form" $}}
+<input type="hidden" name="enterprise_id" value="{{.Config.EnterpriseID}}">
+<input type="hidden" name="open_kfid" value="{{.Config.OpenKfID}}">
+<p>id <code>{{.Config.ID}}</code>（只读） enterprise_id <code>{{.Config.EnterpriseID}}</code>（只读） open_kfid <code>{{.Config.OpenKfID}}</code>（只读）</p>
+<p>project_id <input name="project_id" value="{{.Config.ProjectID}}" required>
+virtual_corp_id <input name="virtual_corp_id" value="{{.Config.VirtualCorpID}}" required>
+agent_id <input name="agent_id" value="{{.Config.AgentID}}" required>
+callback_url <input name="callback_url" value="{{.Config.CallbackURL}}" size="40" required></p>
+<p><label><input type="checkbox" name="disabled" value="1" {{if .Config.Disabled}}checked{{end}}> disabled（写入配置并热加载；与上方启用/停用并存时，保存配置后以本项为准）</label></p>
+<p>密钥 env（只读）：secret=<code>{{.Config.VirtualSecretEnv}}</code> token=<code>{{.Config.CallbackTokenEnv}}</code> aes=<code>{{.Config.CallbackAESKeyEnv}}</code> credential_revision=<code>{{.Config.CredentialRevision}}</code></p>
+<button>保存配置（需二次认证）</button></form></div>
+{{end}}
 </td></tr>{{end}}</table>
 <h2>新建绑定</h2><form method="post" action="/admin/bindings/create">{{template "form" .}}ID <input name="id" required> open_kfid <input name="open_kfid" required> 项目 <input name="project_id" required> callback URL <input name="callback_url" required> agent_id <input name="agent_id" value="1000002"><button>新建</button></form>
 {{template "bottom"}}{{end}}

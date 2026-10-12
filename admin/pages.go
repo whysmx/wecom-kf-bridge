@@ -82,13 +82,30 @@ func (c *Console) bindingsPage(w http.ResponseWriter, r *http.Request, s *sessio
 		storeErr(w)
 		return
 	}
-	var mine []state.Binding
+	cfgByID := map[string]EditableBindingConfig{}
+	for _, cb := range c.cfg.Runtime.ConfigBindings() {
+		cfgByID[cb.ID] = cb
+	}
+	var mine []bindingView
 	for _, b := range all {
-		if b.EnterpriseID == c.cfg.EnterpriseID {
-			mine = append(mine, b)
+		if b.EnterpriseID != c.cfg.EnterpriseID {
+			continue
 		}
+		v := bindingView{Binding: b}
+		if cb, ok := cfgByID[b.ID]; ok {
+			v.HasConfig = true
+			v.Config = cb
+		}
+		mine = append(mine, v)
 	}
 	c.renderPage(w, r, s, "bindings", map[string]any{"Bindings": mine})
+}
+
+// bindingView merges a SQLite binding with its optional config.json counterpart (#29).
+type bindingView struct {
+	state.Binding
+	HasConfig bool
+	Config    EditableBindingConfig
 }
 
 func (c *Console) customersPage(w http.ResponseWriter, r *http.Request, s *session) {

@@ -688,3 +688,44 @@ func (c *Console) settingsSave(r *http.Request, _ *session) result {
 	}
 	return result{location: "/admin/settings", flash: flash}
 }
+
+// bindingConfigSave writes editable BindingConfig fields to config.json and
+// hot-applies them (#29). Identity fields and secret env names are immutable.
+func (c *Console) bindingConfigSave(r *http.Request, _ *session) result {
+	id := r.PathValue("id")
+	if !idPattern.MatchString(id) {
+		return bad("绑定 ID 无效")
+	}
+	project := strings.TrimSpace(r.PostFormValue("project_id"))
+	vcorp := strings.TrimSpace(r.PostFormValue("virtual_corp_id"))
+	agent := strings.TrimSpace(r.PostFormValue("agent_id"))
+	cb := strings.TrimSpace(r.PostFormValue("callback_url"))
+	ent := strings.TrimSpace(r.PostFormValue("enterprise_id"))
+	kf := strings.TrimSpace(r.PostFormValue("open_kfid"))
+	disabled := r.PostFormValue("disabled") == "1" || strings.EqualFold(r.PostFormValue("disabled"), "true")
+	if !idPattern.MatchString(project) || !idPattern.MatchString(vcorp) || !agentPattern.MatchString(agent) {
+		return bad("project_id、virtual_corp_id 或 agent_id 格式无效")
+	}
+	if ent == "" || kf == "" || cb == "" {
+		return bad("enterprise_id、open_kfid、callback_url 不能为空")
+	}
+	if err := c.cfg.Runtime.CheckURL(cb); err != nil {
+		return bad("callback URL 不在 allowlist：" + err.Error())
+	}
+	patch := BindingConfigPatch{
+		EnterpriseID:  ent,
+		OpenKfID:      kf,
+		ProjectID:     project,
+		VirtualCorpID: vcorp,
+		AgentID:       agent,
+		CallbackURL:   cb,
+		Disabled:      disabled,
+	}
+	if err := c.cfg.Runtime.SaveBindingConfig(r.Context(), id, patch); err != nil {
+		c.audit(r, "binding", id, "config_save", "failed", err.Error(), 0)
+		return result{status: http.StatusBadRequest, flash: "保存失败：" + err.Error()}
+	}
+	summary := fmt.Sprintf("project=%s agent=%s disabled=%v callback=%s vcorp=%s", project, agent, disabled, cb, vcorp)
+	c.audit(r, "binding", id, "config_save", "ok", summary, 0)
+	return result{location: "/admin/bindings", flash: "绑定配置已保存并热加载生效"}
+}

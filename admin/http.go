@@ -61,6 +61,7 @@ func (c *Console) routes() {
 		"POST /admin/bindings/{id}/rotate":         {c.bindingRotate, writeOpt{stepUp: true}},
 		"POST /admin/bindings/{id}/verify":         {c.bindingVerify, writeOpt{}},
 		"POST /admin/bindings/{id}/export":         {c.bindingExport, writeOpt{stepUp: true}},
+		"POST /admin/bindings/{id}/config-save":    {c.bindingConfigSave, writeOpt{stepUp: true}},
 		"POST /admin/customers/{id}/handover":      {c.customerHandover, writeOpt{}},
 		"POST /admin/customers/{id}/recover":       {c.customerRecover, writeOpt{}},
 		"POST /admin/diagnostics/{kind}/{id}/mark": {c.diagMark, writeOpt{}},
