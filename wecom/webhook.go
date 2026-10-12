@@ -39,8 +39,10 @@ type Notification struct {
 }
 
 // LogFields returns a redacted view safe for structured logs.
+// The WeCom payload Event is exposed as "wecom_event" so it cannot overwrite
+// the structured log record's "event" name (e.g. wecom_callback_accepted).
 func (n Notification) LogFields() map[string]any {
-	return map[string]any{"msg_type": n.MsgType, "event": n.Event, "open_kfid": n.OpenKfID, "has_token": n.Token != "", "create_time": n.CreateTime}
+	return map[string]any{"msg_type": n.MsgType, "wecom_event": n.Event, "open_kfid": n.OpenKfID, "has_token": n.Token != "", "create_time": n.CreateTime}
 }
 
 // String never prints the pull token.

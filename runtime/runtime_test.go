@@ -41,6 +41,33 @@ func TestStructuredLoggerRedactsNestedSecrets(t *testing.T) {
 		t.Fatalf("fields %#v", f)
 	}
 }
+func TestStructuredLoggerPreservesEventName(t *testing.T) {
+	var b bytes.Buffer
+	l := NewLogger(&b)
+	l.Clock = func() time.Time { return time.Unix(1, 0) }
+	// Mimic wecom.Notification.LogFields before the wecom_event rename, and
+	// any future caller that still passes a field named "event".
+	l.Log("wecom_callback_accepted", map[string]any{
+		"event":     "kf_msg_or_event",
+		"msg_type":  "event",
+		"open_kfid": "kf-bind2",
+		"has_token": true,
+		"method":    "POST",
+	})
+	got := b.String()
+	if !strings.Contains(got, `"event":"wecom_callback_accepted"`) {
+		t.Fatalf("event name overwritten: %s", got)
+	}
+	if strings.Contains(got, `"event":"kf_msg_or_event"`) {
+		t.Fatalf("payload event clobbered structured event: %s", got)
+	}
+	// Reserved keys win: a field named "event" is discarded from the payload
+	// (callers should use wecom_event). Other fields remain.
+	if !strings.Contains(got, "kf-bind2") || !strings.Contains(got, `"msg_type":"event"`) {
+		t.Fatalf("unexpected log %s", got)
+	}
+}
+
 func TestSanitizeFieldsTypes(t *testing.T) {
 	now := time.Now()
 	in := map[string]any{"s": "ok", "password": "x", "bytes": []byte{1}, "slice": []any{"content", "ok"}, "time": now, "map": map[string]string{"secret": "x", "v": "v"}}

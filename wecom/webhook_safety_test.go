@@ -113,8 +113,14 @@ func TestCallbackAcceptedLogsWithoutPII(t *testing.T) {
 	if accepted == nil {
 		t.Fatalf("missing wecom_callback_accepted in %v", events)
 	}
-	if accepted["method"] != "POST" || accepted["msg_type"] != "event" || accepted["event"] != "kf_msg_or_event" || accepted["open_kfid"] != "kf-bind2" || accepted["has_token"] != true {
+	if accepted["method"] != "POST" || accepted["msg_type"] != "event" || accepted["wecom_event"] != "kf_msg_or_event" || accepted["open_kfid"] != "kf-bind2" || accepted["has_token"] != true {
 		t.Fatalf("fields %+v", accepted)
+	}
+	if _, ok := accepted["event"]; ok {
+		t.Fatalf("LogFields must not use reserved key event: %+v", accepted)
+	}
+	if accepted["create_time"] != int64(1700000000) {
+		t.Fatalf("create_time %+v", accepted["create_time"])
 	}
 	blob := fmt.Sprint(accepted, events, rr.Body.String())
 	for _, leak := range []string{"SECRET-PULL", "ext-secret"} {
