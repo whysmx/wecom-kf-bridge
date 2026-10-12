@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/xml"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 
 	bridge "github.com/whysmx/wecom-kf-bridge"
 	"github.com/whysmx/wecom-kf-bridge/state"
+	"github.com/whysmx/wecom-kf-bridge/wecom"
 )
 
 func TestDeliverImageAndFileCallback(t *testing.T) {
@@ -94,5 +96,63 @@ func TestDeliverRetryOnCallbackFailureKeepsMessage(t *testing.T) {
 	m, _ := st.InboxByExternalID(ctx, "sc", "f1")
 	if m.State != state.InboxRetryWait {
 		t.Fatalf("state=%s want RETRY_WAIT", m.State)
+	}
+}
+
+func TestAdapterGetMedia(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/cgi-bin/gettoken", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"errcode":0,"access_token":"TOK","expires_in":7200}`)
+	})
+	mux.HandleFunc("/cgi-bin/media/get", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("access_token") != "TOK" || r.URL.Query().Get("media_id") != "MID1" {
+			t.Fatalf("query %v", r.URL.Query())
+		}
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Content-Disposition", `attachment; filename="a.png"`)
+		_, _ = w.Write([]byte("PNGDATA"))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	cl := wecom.NewClient(srv.URL, "c", "s")
+	cl.HTTPClient = srv.Client()
+	a := &WeComAdapter{
+		clients: map[string]*wecom.Client{"e1": cl},
+		tokens:  map[string]*tokenCache{"e1": {client: cl, now: time.Now}},
+		routes:  map[string]bindingRoute{"b1": {"e1", "kf1"}},
+		now:     time.Now,
+	}
+	ctx := context.Background()
+	b := bridge.Binding{ID: "b1"}
+	if _, err := a.GetMedia(ctx, b, "  "); err == nil {
+		t.Fatal("empty media_id")
+	}
+	if _, err := a.GetMedia(ctx, bridge.Binding{ID: "nope"}, "MID1"); err == nil {
+		t.Fatal("unknown binding")
+	}
+	md, err := a.GetMedia(ctx, b, "MID1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(md.Data) != "PNGDATA" || md.ContentType != "image/png" || md.ContentDisposition == "" {
+		t.Fatalf("%+v", md)
+	}
+}
+
+func TestBuildInboundCallbackVoiceAndUnknown(t *testing.T) {
+	now := time.Now()
+	voicePayload := bridge.EncodeMediaPayload("VOICEMEDIA", "")
+	in, err := buildInboundCallback("uid", "1002", state.InboxMessage{Type: "voice", PayloadRef: voicePayload, CreateTime: now, CompatMsgID: 9})
+	if err != nil || in.MsgType != "voice" || in.MediaID != "VOICEMEDIA" || in.FileName != "" {
+		t.Fatalf("%+v %v", in, err)
+	}
+	if _, err := buildInboundCallback("uid", "1002", state.InboxMessage{Type: "location", PayloadRef: "x", CreateTime: now}); err == nil {
+		t.Fatal("unknown type")
+	}
+	if _, err := buildInboundCallback("uid", "1002", state.InboxMessage{Type: "image", PayloadRef: `{"media_id":""}`, CreateTime: now}); err == nil {
+		t.Fatal("bad payload")
+	}
+	if _, err := buildInboundCallback("uid", "1002", state.InboxMessage{Type: "image", PayloadRef: "", CreateTime: now}); err == nil {
+		t.Fatal("empty payload")
 	}
 }
