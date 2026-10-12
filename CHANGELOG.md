@@ -6,6 +6,7 @@
 
 ### 诊断
 
+- 配置项 `wecom.treat_48002_as_ai_eligible`（默认 `false`）：**仅联调**。开启后，`kf/service_state/get` 返回官方 errcode 48002 时记 `WARNING_service_state_48002_bypassed`（含 errcode/errmsg/open_kfid/权限排查 hint，无 token/userid）并按 `AI_ELIGIBLE` 放行发送，而不再以 70007 拦截；其它 errcode / 网络错误 / 未映射状态行为不变。启动时记 `WARNING_treat_48002_as_ai_eligible`。**严禁生产开启**。
 - `kf/service_state/get` 各类失败分别记录日志：`service_state_upstream_errcode`（含官方 errcode/errmsg、open_kfid；48002 附权限排查提示）、`service_state_call_error`（网络/解析）、`service_state_route_error`、`service_state_unmapped`（含官方 service_state 原始整数）、`service_state_not_ai`；日志不含 token、external_userid 或正文。
 - 启动时若 `wecom.service_state_map` 为空或缺少 AI_ELIGIBLE / WAITING_HUMAN / HUMAN，记录 `WARNING_service_state_map_incomplete`（未映射的官方状态一律视为 UNKNOWN，回复会被拦截）。
 

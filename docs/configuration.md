@@ -28,6 +28,7 @@
 | `send_policy.window_hours` / `max_sends` | 客服会话窗口与条数预算（默认 48h / 5） |
 | `wecom.service_state_map` | 官方 `service_state` 数值 → 内部状态（`AI_ELIGIBLE` / `WAITING_HUMAN` / `HUMAN` / …）；管理后台转人工/恢复依赖此映射 |
 | `wecom.allow_insecure_http` | 仅测试/本地 fake 允许 http API；启动会打安全告警 |
+| `wecom.treat_48002_as_ai_eligible` | **仅联调**。默认 `false`。为 `true` 时，若 `kf/service_state/get` 返回官方 errcode **48002**（api forbidden），记一条明确 WARNING（无 PII）并把该次查询当作 `AI_ELIGIBLE` 放行发送，而不再以 70007 拦截。其它 `service_state` 错误行为不变。**严禁生产开启**；正确做法是为调用应用开通微信客服 API 权限（「可调用接口的应用」+ 客服账号「通过API管理」）。 |
 
 ## 3. 管理后台（`admin`）
 

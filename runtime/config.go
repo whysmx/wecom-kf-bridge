@@ -62,6 +62,11 @@ type Config struct {
 		// ServiceStateMap maps numeric service_state to internal states;
 		// unmapped values are UNKNOWN and block AI sends.
 		ServiceStateMap map[string]string `json:"service_state_map"`
+		// Treat48002AsAIEligible: joint-debug only. When kf/service_state/get
+		// returns WeCom errcode 48002 (api forbidden), log a WARNING and
+		// treat the customer as AI_ELIGIBLE for send instead of blocking with
+		// 70007. Default false; never enable in production.
+		Treat48002AsAIEligible bool `json:"treat_48002_as_ai_eligible"`
 	} `json:"wecom"`
 	Enterprises []EnterpriseConfig `json:"enterprises"`
 	Bindings    []BindingConfig    `json:"bindings"`

@@ -76,6 +76,8 @@ type WeComAdapter struct {
 	now     func() time.Time
 	rmu     sync.RWMutex
 	logger  Logger
+	// treat48002AsAI: joint-debug only; see Config.WeCom.Treat48002AsAIEligible.
+	treat48002AsAI bool
 }
 
 func (a *WeComAdapter) log(ev string, f map[string]any) {
@@ -158,6 +160,11 @@ func (a *WeComAdapter) ServiceState(ctx context.Context, b bridge.Binding, c bri
 			f := map[string]any{"binding_id": b.ID, "open_kfid": r.openKfID, "errcode": ae.Code, "errmsg": ae.Message, "http_status": ae.HTTPStatus}
 			if ae.Code == 48002 {
 				f["hint"] = "api forbidden: the calling app must be in 微信客服「可调用接口的应用」, the kf account must be set to 通过API管理, and its servicers must be in the app's visible range"
+				if a.treat48002AsAI {
+					f["effect"] = "treat_48002_as_ai_eligible: proceeding as AI_ELIGIBLE (joint-debug only; never production)"
+					a.log("WARNING_service_state_48002_bypassed", f)
+					return state.CustomerAIEligible, nil
+				}
 			}
 			a.log("service_state_upstream_errcode", f)
 		} else {
