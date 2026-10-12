@@ -90,11 +90,18 @@ func secure(w http.ResponseWriter) {
 type authedFn = func(http.ResponseWriter, *http.Request, *session)
 
 // authed rejects every request without a valid session: GET redirects to
-// the login page, anything else is 401.
+// the login page, anything else is 401. When LanNoLogin is on and the TCP
+// peer is private/loopback/link-local, a GET without a session gets an
+// automatic lanAuth session (CSRF still required on writes).
 func (c *Console) authed(h authedFn) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		secure(w)
 		s := c.lookup(r)
+		if s == nil && c.cfg.LanNoLogin && r.Method == http.MethodGet && isLANClient(r) {
+			s = c.newSessionAuth(true)
+			c.setCookie(w, s.id, int(c.cfg.SessionTTL.Seconds()))
+			c.auditWith(r, s, "session", "admin", "login", "ok", "lan_no_login", 0)
+		}
 		if s == nil {
 			if r.Method == http.MethodGet {
 				http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
@@ -210,11 +217,22 @@ func replay(w http.ResponseWriter, r *http.Request, loc string) {
 }
 
 func (c *Console) audit(r *http.Request, objType, objID, op, outcome, summary string, rev int64) {
+	c.auditWith(r, nil, objType, objID, op, outcome, summary, rev)
+}
+
+func (c *Console) auditWith(r *http.Request, s *session, objType, objID, op, outcome, summary string, rev int64) {
 	key := idemKey(r)
 	if key == "" {
 		key = c.randomHex(16)
 	}
-	_ = c.cfg.Store.AddActorAudit(r.Context(), state.AuditEntry{Actor: "admin@" + clientIP(r), Key: op + ":" + key, ObjectType: objType, ObjectID: objID, Operation: op, Result: outcome, Summary: summary, Revision: rev})
+	actor := "admin@" + clientIP(r)
+	if s == nil {
+		s = c.lookup(r)
+	}
+	if s != nil && s.lanAuth {
+		actor = "admin-lan@" + clientIP(r)
+	}
+	_ = c.cfg.Store.AddActorAudit(r.Context(), state.AuditEntry{Actor: actor, Key: op + ":" + key, ObjectType: objType, ObjectID: objID, Operation: op, Result: outcome, Summary: summary, Revision: rev})
 }
 
 // clientIP is the TCP peer; X-Forwarded-For is not trusted (docs/17 §2).

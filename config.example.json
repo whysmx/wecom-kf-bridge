@@ -10,7 +10,8 @@
     "company_name": "示例企业",
     "session_ttl_minutes": 480,
     "max_sessions": 8,
-    "insecure_cookie": true
+    "insecure_cookie": true,
+    "lan_no_login": true
   },
   "storage": {
     "database": "./data/bridge.db"

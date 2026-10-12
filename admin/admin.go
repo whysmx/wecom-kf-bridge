@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -85,13 +86,16 @@ type Config struct {
 	// Origin is the exact scheme://host[:port] browsers use for the console;
 	// POSTs whose Origin/Referer differ are refused.
 	Origin string
-	// InsecureCookie omits the Secure flag (plain-http loopback only; the
-	// runtime config enforces that).
+	// InsecureCookie omits the Secure flag (plain-http; runtime config
+	// requires it for http:// origins).
 	InsecureCookie bool
-	EnterpriseID   string
-	CompanyName    string
-	CorpID         string
-	Settings       []Setting
+	// LanNoLogin lets private/loopback/link-local clients skip the login
+	// wall (CSRF and write protections remain).
+	LanNoLogin   bool
+	EnterpriseID string
+	CompanyName  string
+	CorpID       string
+	Settings     []Setting
 	// ServiceStateMap maps official service_state values to internal states
 	// (wecom.service_state_map). Handover transfers to the value mapped to
 	// WAITING_HUMAN, recovery to AI_ELIGIBLE.
@@ -123,6 +127,9 @@ type session struct {
 	flash         string
 	pendingExport string
 	tickets       map[string]ticket
+	// lanAuth marks a session issued via LanNoLogin (no password); step-up
+	// password checks are skipped for these sessions.
+	lanAuth bool
 }
 
 type ticket struct {
@@ -175,6 +182,10 @@ func (c *Console) randomHex(n int) string {
 const cookieName = "wkb_admin"
 
 func (c *Console) newSession() *session {
+	return c.newSessionAuth(false)
+}
+
+func (c *Console) newSessionAuth(lan bool) *session {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.cfg.Clock()
@@ -193,7 +204,7 @@ func (c *Console) newSession() *session {
 		delete(c.sessions, oldest)
 	}
 	c.seq++
-	s := &session{seq: c.seq, id: c.randomHex(32), csrf: c.randomHex(32), created: now, exp: now.Add(c.cfg.SessionTTL), tickets: map[string]ticket{}}
+	s := &session{seq: c.seq, id: c.randomHex(32), csrf: c.randomHex(32), created: now, exp: now.Add(c.cfg.SessionTTL), tickets: map[string]ticket{}, lanAuth: lan}
 	c.sessions[s.id] = s
 	return s
 }
@@ -269,7 +280,24 @@ func (c *Console) takeFlash(s *session) (string, string) {
 func (c *Console) steppedUp(s *session) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if s.lanAuth {
+		return true
+	}
 	return c.cfg.Clock().Before(s.stepUpUntil)
+}
+
+// isLANClient reports whether the TCP peer is loopback, RFC1918/ULA private,
+// or link-local. X-Forwarded-For is ignored (docs/17 §2).
+func isLANClient(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
 }
 
 // issueTicket creates a single-use danger confirmation bound to object,

@@ -448,9 +448,18 @@ func TestAppServesAdminSeparately(t *testing.T) {
 func TestReview3ConfigHardening(t *testing.T) {
 	base := adminGatewayConfig(t, 9)
 	cases := map[string]func(*Config){
-		"http api without flag":        func(c *Config) { c.WeCom.AllowInsecureHTTP = false },
-		"insecure cookie non-loopback": func(c *Config) { c.Admin.Listen = "0.0.0.0:8091"; c.Admin.InsecureCookie = true },
-		"http origin secure cookie":    func(c *Config) { c.Admin.Origin = "http://127.0.0.1:8091" },
+		"http api without flag":     func(c *Config) { c.WeCom.AllowInsecureHTTP = false },
+		"http origin secure cookie": func(c *Config) { c.Admin.Origin = "http://127.0.0.1:8091"; c.Admin.InsecureCookie = false },
+		"zero listen without origin": func(c *Config) {
+			c.Admin.Listen = "0.0.0.0:8091"
+			c.Admin.Origin = ""
+			c.Admin.InsecureCookie = true
+		},
+		"zero listen http without insecure": func(c *Config) {
+			c.Admin.Listen = "0.0.0.0:8091"
+			c.Admin.Origin = "http://192.168.1.10:8091"
+			c.Admin.InsecureCookie = false
+		},
 		"bad cidr": func(c *Config) {
 			c.Security.CallbackTargets = []CallbackTarget{{Host: "h", Port: 1, AllowedCIDRs: []string{"10.0.0.0/33"}}}
 		},
@@ -502,6 +511,45 @@ func TestReview3ConfigHardening(t *testing.T) {
 type captureLogger struct{ events []string }
 
 func (l *captureLogger) Log(ev string, _ map[string]any) { l.events = append(l.events, ev) }
+
+func TestInsecureCookieAllowsNonLoopbackWithOrigin(t *testing.T) {
+	c := adminGatewayConfig(t, 9)
+	c.Admin.Listen = "0.0.0.0:8091"
+	c.Admin.Origin = "http://192.168.1.10:8091"
+	c.Admin.InsecureCookie = true
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if !c.Admin.LanNoLoginEnabled() {
+		t.Fatal("lan_no_login should default true")
+	}
+	off := false
+	c.Admin.LanNoLogin = &off
+	if c.Admin.LanNoLoginEnabled() {
+		t.Fatal("explicit false")
+	}
+	if !listenNeedsExplicitOrigin("0.0.0.0:8091") || !listenNeedsExplicitOrigin("[::]:8091") || !listenNeedsExplicitOrigin("bad") {
+		t.Fatal("listenNeedsExplicitOrigin should require origin")
+	}
+	if listenNeedsExplicitOrigin("127.0.0.1:8091") || listenNeedsExplicitOrigin("192.168.1.5:8091") {
+		t.Fatal("specific host should not require origin")
+	}
+	// ParseConfig applies defaults including lan_no_login=true
+	raw := []byte(`{
+		"admin":{"listen":"0.0.0.0:8091","origin":"http://192.168.1.10:8091","password_hash_env":"H","insecure_cookie":true},
+		"storage":{"database":"./x.db"},
+		"wecom":{"api_base_url":"https://qyapi.weixin.qq.com","customer_origins":[3]},
+		"security":{"callback_targets":[{"host":"h","port":1,"allowed_cidrs":["10.0.0.0/8"]}]},
+		"enterprises":[{"id":"e1","tenant_key":"t","corp_id":"c","secret_env":"S","callback_token_env":"T","callback_aes_key_env":"A"}]
+	}`)
+	pc, err := ParseConfig(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pc.Admin.LanNoLoginEnabled() {
+		t.Fatal("ParseConfig should default lan_no_login true")
+	}
+}
 
 func TestInsecureAPIWarns(t *testing.T) {
 	l := &captureLogger{}
