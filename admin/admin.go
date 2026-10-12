@@ -9,8 +9,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -57,6 +59,18 @@ type Runtime interface {
 	Verify(ctx context.Context, bindingID string) error
 	// Status reports component status (no secrets).
 	Status(ctx context.Context) map[string]string
+	// EditableSettings returns the live values of admin-editable runtime knobs (#25).
+	EditableSettings() EditableSettings
+	// SaveSettings persists editable knobs (config file) and hot-applies them (#25).
+	SaveSettings(ctx context.Context, s EditableSettings) error
+}
+
+// EditableSettings are the knobs the system-settings page may change (#25).
+// Secrets stay out of this struct.
+type EditableSettings struct {
+	Treat48002AsAIEligible bool
+	ServiceStateMap        map[string]string // official int as string → internal state
+	PublicBaseURL          string
 }
 
 // Setting is one displayed configuration value (never a secret value).
@@ -283,4 +297,37 @@ func mask(v string) string {
 		return strings.Repeat("*", len(r))
 	}
 	return string(r[:3]) + strings.Repeat("*", len(r)-5) + string(r[len(r)-2:])
+}
+
+// ApplyEditableSettings hot-updates the console view of editable knobs after
+// Runtime.SaveSettings succeeds (#25).
+func (c *Console) ApplyEditableSettings(s EditableSettings) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cfg.GatewayBaseURL = s.PublicBaseURL
+	m := map[int]string{}
+	for k, v := range s.ServiceStateMap {
+		n, err := strconv.Atoi(k)
+		if err != nil {
+			continue
+		}
+		m[n] = v
+	}
+	c.cfg.ServiceStateMap = m
+	// Refresh displayed rows that mirror editable fields; keep secret env names.
+	out := make([]Setting, 0, len(c.cfg.Settings)+3)
+	for _, row := range c.cfg.Settings {
+		switch row.Name {
+		case "service_state_map", "public_base_url", "treat_48002_as_ai_eligible":
+			continue
+		default:
+			out = append(out, row)
+		}
+	}
+	out = append(out,
+		Setting{Group: "微信客服", Name: "service_state_map", Value: fmt.Sprint(s.ServiceStateMap)},
+		Setting{Group: "微信客服", Name: "treat_48002_as_ai_eligible", Value: fmt.Sprint(s.Treat48002AsAIEligible)},
+		Setting{Group: "服务", Name: "public_base_url", Value: s.PublicBaseURL},
+	)
+	c.cfg.Settings = out
 }

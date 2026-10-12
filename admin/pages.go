@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -169,7 +170,19 @@ func (c *Console) diagnosticsPage(w http.ResponseWriter, r *http.Request, s *ses
 }
 
 func (c *Console) settingsPage(w http.ResponseWriter, r *http.Request, s *session) {
-	c.renderPage(w, r, s, "settings", map[string]any{"Settings": c.cfg.Settings})
+	ed := c.cfg.Runtime.EditableSettings()
+	mapJSON := "{}"
+	if ed.ServiceStateMap != nil {
+		if b, err := json.Marshal(ed.ServiceStateMap); err == nil {
+			mapJSON = string(b)
+		}
+	}
+	c.renderPage(w, r, s, "settings", map[string]any{
+		"Settings":                 c.cfg.Settings,
+		"Treat48002AsAIEligible":   ed.Treat48002AsAIEligible,
+		"ServiceStateMapJSON":      mapJSON,
+		"PublicBaseURL":            ed.PublicBaseURL,
+	})
 }
 
 func (c *Console) auditPage(w http.ResponseWriter, r *http.Request, s *session) {

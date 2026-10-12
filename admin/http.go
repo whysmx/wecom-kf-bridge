@@ -65,6 +65,7 @@ func (c *Console) routes() {
 		"POST /admin/customers/{id}/recover":       {c.customerRecover, writeOpt{}},
 		"POST /admin/diagnostics/{kind}/{id}/mark": {c.diagMark, writeOpt{}},
 		"POST /admin/settings/test":                {c.settingsTest, writeOpt{}},
+		"POST /admin/settings/save":                {c.settingsSave, writeOpt{stepUp: true}},
 	}
 	for path, w := range writes {
 		m.Handle(path, c.authed(c.post(w.fn, w.opt, true)))

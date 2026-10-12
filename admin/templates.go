@@ -83,7 +83,15 @@ const layout = `{{define "form"}}<input type="hidden" name="csrf_token" value="{
 
 {{define "body"}}{{template "top" .}}<h1>消息正文：{{.Data.Kind}} {{.Data.ID}}</h1><pre>{{.Data.Body}}</pre>{{template "bottom"}}{{end}}
 
-{{define "settings"}}{{template "top" .}}<h1>系统设置</h1><p>只读展示（保存请修改配置文件并重启，见 README）。Secret/Token/AES 只显示环境变量名。</p>
+{{define "settings"}}{{template "top" .}}<h1>系统设置</h1>
+<p>可在线保存部分运行时项（写回配置文件并<strong>热加载</strong>，无需重启）。Secret/Token/AES 只显示环境变量名，不可在此改明文（轮换请走绑定页）。</p>
+<h2>可编辑项</h2>
+<form method="post" action="/admin/settings/save">{{template "form" .}}
+<p><label><input type="checkbox" name="treat_48002_as_ai_eligible" value="1" {{if .Data.Treat48002AsAIEligible}}checked{{end}}> wecom.treat_48002_as_ai_eligible（<strong>仅联调</strong>，严禁生产；保存需二次认证）</label></p>
+<p><label>wecom.service_state_map（JSON 对象）<br><textarea name="service_state_map" rows="6" cols="60" required>{{.Data.ServiceStateMapJSON}}</textarea></label></p>
+<p><label>server.public_base_url <input name="public_base_url" value="{{.Data.PublicBaseURL}}" size="48" placeholder="https://bridge.example.com"></label></p>
+<button>保存（需二次认证）</button></form>
+<h2>只读项</h2>
 <table>{{range .Data.Settings}}<tr><th>{{.Group}}</th><td>{{.Name}}</td><td>{{.Value}}</td></tr>{{end}}</table>
 <h2>callback 连接测试</h2><form method="post" action="/admin/settings/test">{{template "form" .}}<input name="url" required><button>测试</button></form>{{template "bottom"}}{{end}}
 

@@ -653,3 +653,33 @@ func (c *Console) settingsTest(r *http.Request, _ *session) result {
 	c.audit(r, "settings", "callback", "connection_test", "ok", "", 0)
 	return result{location: "/admin/settings", flash: "连接测试通过"}
 }
+
+// settingsSave persists editable runtime knobs (#25). Requires step-up because
+// treat_48002_as_ai_eligible is a joint-debug kill switch.
+func (c *Console) settingsSave(r *http.Request, _ *session) result {
+	rawMap := strings.TrimSpace(r.PostFormValue("service_state_map"))
+	pub := strings.TrimSpace(r.PostFormValue("public_base_url"))
+	treat := r.PostFormValue("treat_48002_as_ai_eligible") == "1" || strings.EqualFold(r.PostFormValue("treat_48002_as_ai_eligible"), "true")
+	m := map[string]string{}
+	if rawMap != "" {
+		if err := json.Unmarshal([]byte(rawMap), &m); err != nil {
+			return bad("service_state_map 须为 JSON 对象（如 {\"1\":\"AI_ELIGIBLE\"}）")
+		}
+	}
+	s := EditableSettings{Treat48002AsAIEligible: treat, ServiceStateMap: m, PublicBaseURL: pub}
+	if err := c.cfg.Runtime.SaveSettings(r.Context(), s); err != nil {
+		c.audit(r, "settings", "runtime", "save", "failed", err.Error(), 0)
+		return result{status: http.StatusBadRequest, flash: "保存失败：" + err.Error()}
+	}
+	c.ApplyEditableSettings(s)
+	summary := fmt.Sprintf("treat_48002=%v public_base_url=%q map_keys=%d", treat, pub, len(m))
+	if treat {
+		summary += "; WARNING joint-debug only never production"
+	}
+	c.audit(r, "settings", "runtime", "save", "ok", summary, 0)
+	flash := "系统设置已保存并热加载生效"
+	if treat {
+		flash += "（已开启 treat_48002_as_ai_eligible：仅联调，严禁生产）"
+	}
+	return result{location: "/admin/settings", flash: flash}
+}

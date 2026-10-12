@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -296,6 +297,69 @@ func (k consoleKF) ServiceState(ctx context.Context, id, ext string) (int, error
 	return resp.ServiceState, err
 }
 
+func (r consoleRuntime) EditableSettings() admin.EditableSettings {
+	r.g.cfgMu.RLock()
+	defer r.g.cfgMu.RUnlock()
+	cfg := r.g.liveCfg
+	m := map[string]string{}
+	for k, v := range cfg.WeCom.ServiceStateMap {
+		m[k] = v
+	}
+	return admin.EditableSettings{
+		Treat48002AsAIEligible: cfg.WeCom.Treat48002AsAIEligible,
+		ServiceStateMap:        m,
+		PublicBaseURL:          cfg.Server.PublicBaseURL,
+	}
+}
+
+func (r consoleRuntime) SaveSettings(_ context.Context, s admin.EditableSettings) error {
+	if err := ValidateEditableSettings(s.Treat48002AsAIEligible, s.ServiceStateMap, s.PublicBaseURL); err != nil {
+		return err
+	}
+	path := r.g.configPath
+	if path == "" {
+		return errors.New("config path unknown; cannot persist settings")
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		return err
+	}
+	cfg.WeCom.Treat48002AsAIEligible = s.Treat48002AsAIEligible
+	cfg.WeCom.ServiceStateMap = s.ServiceStateMap
+	cfg.Server.PublicBaseURL = s.PublicBaseURL
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	if err := WriteConfigFile(path, cfg); err != nil {
+		return err
+	}
+	r.g.applyEditableSettings(s)
+	return nil
+}
+
+func (g *Gateway) applyEditableSettings(s admin.EditableSettings) {
+	states := map[int]string{}
+	for k, v := range s.ServiceStateMap {
+		n, _ := strconv.Atoi(k)
+		states[n] = v
+	}
+	g.cfgMu.Lock()
+	g.liveCfg.WeCom.Treat48002AsAIEligible = s.Treat48002AsAIEligible
+	g.liveCfg.WeCom.ServiceStateMap = map[string]string{}
+	for k, v := range s.ServiceStateMap {
+		g.liveCfg.WeCom.ServiceStateMap[k] = v
+	}
+	g.liveCfg.Server.PublicBaseURL = s.PublicBaseURL
+	g.cfgMu.Unlock()
+	if g.adapter != nil {
+		g.adapter.setEditableWeCom(s.Treat48002AsAIEligible, states)
+	}
+	if g.console != nil {
+		g.console.ApplyEditableSettings(s)
+	}
+}
+
+
 func (g *Gateway) buildAdmin(cfg Config) (http.Handler, error) {
 	hash, err := secretEnv(cfg.Admin.PasswordHashEnv)
 	if err != nil {
@@ -319,6 +383,8 @@ func (g *Gateway) buildAdmin(cfg Config) (http.Handler, error) {
 		{Group: "微信客服", Name: "API 地址", Value: wecom.RedactURL(cfg.WeCom.APIBaseURL)},
 		{Group: "微信客服", Name: "customer origins", Value: fmt.Sprint(cfg.WeCom.CustomerOrigins)},
 		{Group: "微信客服", Name: "service_state_map", Value: fmt.Sprint(cfg.WeCom.ServiceStateMap)},
+		{Group: "微信客服", Name: "treat_48002_as_ai_eligible", Value: fmt.Sprint(cfg.WeCom.Treat48002AsAIEligible)},
+		{Group: "服务", Name: "public_base_url", Value: cfg.Server.PublicBaseURL},
 		{Group: "发送", Name: "窗口（小时）", Value: fmt.Sprint(cfg.SendPolicy.WindowHours)},
 		{Group: "发送", Name: "发送预算", Value: fmt.Sprint(cfg.SendPolicy.MaxSends)},
 		{Group: "发送", Name: "分块大小（字节）", Value: fmt.Sprint(bridge.DefaultChunkBytes)},
@@ -339,6 +405,7 @@ func (g *Gateway) buildAdmin(cfg Config) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	g.console = c
 	return c.Handler(), nil
 }
 

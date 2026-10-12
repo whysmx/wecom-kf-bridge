@@ -70,6 +70,9 @@ type Config struct {
 	} `json:"wecom"`
 	Enterprises []EnterpriseConfig `json:"enterprises"`
 	Bindings    []BindingConfig    `json:"bindings"`
+	// ConfigPath is the JSON file LoadConfig read; set by the process after
+	// load so the admin console can persist editable knobs (#25). Not JSON.
+	ConfigPath string `json:"-"`
 }
 
 type AdminConfig struct {
@@ -318,3 +321,46 @@ func secretEnv(name string) (string, error) {
 
 // ShutdownGrace is the configured worker/HTTP shutdown grace.
 func ShutdownGrace(c Config) time.Duration { return c.grace() }
+
+// ValidateEditableSettings checks the admin-editable subset (#25).
+func ValidateEditableSettings(treat bool, serviceStateMap map[string]string, publicBaseURL string) error {
+	_ = treat // bool is always valid; danger is operational, not schema
+	var errs []string
+	if publicBaseURL != "" {
+		u, err := url.Parse(publicBaseURL)
+		if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || u.RawQuery != "" || u.Fragment != "" || strings.Contains(u.Path, "/cgi-bin") {
+			errs = append(errs, "server.public_base_url must be an http(s) base URL without userinfo, query, fragment or /cgi-bin")
+		}
+	}
+	for k, v := range serviceStateMap {
+		if _, err := strconv.Atoi(k); err != nil || !validInternalState(v) {
+			errs = append(errs, "wecom.service_state_map invalid entry "+k)
+		}
+	}
+	if len(errs) > 0 {
+		return errors.New(strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+// WriteConfigFile atomically replaces path with pretty-printed cfg (#25).
+func WriteConfigFile(path string, cfg Config) error {
+	if strings.TrimSpace(path) == "" {
+		return errors.New("config path empty")
+	}
+	cfg.ConfigPath = ""
+	raw, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	raw = append(raw, '\n')
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}

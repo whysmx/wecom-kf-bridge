@@ -11,6 +11,7 @@ import (
 	"time"
 
 	bridge "github.com/whysmx/wecom-kf-bridge"
+	"github.com/whysmx/wecom-kf-bridge/admin"
 	"github.com/whysmx/wecom-kf-bridge/state"
 	"github.com/whysmx/wecom-kf-bridge/wecom"
 )
@@ -35,6 +36,12 @@ type Gateway struct {
 	vbs     map[string]bridge.Binding
 	kfmu    sync.RWMutex
 	scopes  map[string]string // enterprise|open_kfid -> scope
+
+	// liveCfg / configPath support admin settings save + hot-reload (#25).
+	cfgMu      sync.RWMutex
+	liveCfg    Config
+	configPath string
+	console    *admin.Console
 }
 
 func (g *Gateway) Close() error {
@@ -76,7 +83,7 @@ func Build(ctx context.Context, cfg Config, logger Logger) (*Gateway, error) {
 		lock.Release()
 		return nil, err
 	}
-	g := &Gateway{Store: st, lock: lock}
+	g := &Gateway{Store: st, lock: lock, liveCfg: cfg, configPath: cfg.ConfigPath}
 	if err := g.wire(ctx, cfg, logger); err != nil {
 		g.Close()
 		return nil, err
