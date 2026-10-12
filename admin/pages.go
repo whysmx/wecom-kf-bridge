@@ -178,10 +178,10 @@ func (c *Console) settingsPage(w http.ResponseWriter, r *http.Request, s *sessio
 		}
 	}
 	c.renderPage(w, r, s, "settings", map[string]any{
-		"Settings":                 c.cfg.Settings,
-		"Treat48002AsAIEligible":   ed.Treat48002AsAIEligible,
-		"ServiceStateMapJSON":      mapJSON,
-		"PublicBaseURL":            ed.PublicBaseURL,
+		"Settings":               c.cfg.Settings,
+		"Treat48002AsAIEligible": ed.Treat48002AsAIEligible,
+		"ServiceStateMapJSON":    mapJSON,
+		"PublicBaseURL":          ed.PublicBaseURL,
 	})
 }
 

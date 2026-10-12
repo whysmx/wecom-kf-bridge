@@ -174,7 +174,6 @@ func TestSaveSettingsLoadFailure(t *testing.T) {
 	}
 }
 
-
 func TestWriteConfigFileIOErrors(t *testing.T) {
 	dir := t.TempDir()
 	if err := WriteConfigFile(filepath.Join(dir, "missing-parent", "c.json"), Config{}); err == nil {

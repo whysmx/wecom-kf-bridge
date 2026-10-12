@@ -359,7 +359,6 @@ func (g *Gateway) applyEditableSettings(s admin.EditableSettings) {
 	}
 }
 
-
 func (g *Gateway) buildAdmin(cfg Config) (http.Handler, error) {
 	hash, err := secretEnv(cfg.Admin.PasswordHashEnv)
 	if err != nil {
