@@ -194,8 +194,17 @@ func (c *Client) SyncAll(ctx context.Context, opts SyncOptions) (SyncResult, err
 		if err != nil {
 			return result, err
 		}
+		count := len(page.Messages) + len(page.Bad)
+		opts.alert("wecom_sync_page_ok", map[string]any{
+			"binding_id": opts.BindingID,
+			"count":      count,
+			"has_more":   page.HasMore == 1,
+			"page":       pageNo,
+			"inserted":   n,
+			"errcode":    page.ErrCode,
+		})
 		result.Pages++
-		result.Messages += len(page.Messages) + len(page.Bad)
+		result.Messages += count
 		result.Inserted += n
 		cursor = page.NextCursor
 		result.Cursor = cursor

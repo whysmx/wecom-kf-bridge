@@ -3,8 +3,10 @@ package bridge
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -353,5 +355,53 @@ func TestBuildCallbackEncryptsEscapedXML(t *testing.T) {
 	d := newEnv(t, func(c *Config) { c.Bindings[0].Enabled = false })
 	if _, err := d.srv.BuildCallback("b1", InboundMessage{}); err == nil {
 		t.Fatal("disabled binding")
+	}
+}
+
+func TestSendLogsUpstreamAcceptedWithoutPII(t *testing.T) {
+	var events []string
+	var fields []map[string]any
+	var mu sync.Mutex
+	e := newEnv(t, func(cfg *Config) {
+		cfg.Logger = LoggerFunc(func(ev string, f map[string]any) {
+			mu.Lock()
+			defer mu.Unlock()
+			events = append(events, ev)
+			cp := map[string]any{}
+			for k, v := range f {
+				cp[k] = v
+			}
+			fields = append(fields, cp)
+		})
+	})
+	tok := e.token()
+	secretBody := "客户隐私正文请勿入日志"
+	code, v := e.send(tok, e.cust.UID, "text", secretBody)
+	if code != 200 || errcode(v) != 0 {
+		t.Fatalf("%d %v", code, v)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	var ok []map[string]any
+	for i, ev := range events {
+		if ev == "wecom_send_msg_ok" {
+			ok = append(ok, fields[i])
+		}
+	}
+	if len(ok) != 1 {
+		t.Fatalf("want 1 wecom_send_msg_ok, got %d in %v", len(ok), events)
+	}
+	f := ok[0]
+	if f["binding_id"] != "b1" || f["msgid"] != "wx-1" || f["errcode"] != 0 || f["chunk"] != 1 || f["chunks"] != 1 {
+		t.Fatalf("fields %+v", f)
+	}
+	if f["outbox_id"] == "" || f["outbox_id"] == nil {
+		t.Fatalf("missing outbox_id: %+v", f)
+	}
+	blob := fmt.Sprint(f, events)
+	for _, leak := range []string{secretBody, "ext-1", "外部昵称", "缓存昵称", e.cust.UID} {
+		if strings.Contains(blob, leak) {
+			t.Fatalf("PII leaked via %q: %s", leak, blob)
+		}
 	}
 }

@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -202,5 +204,45 @@ func TestSyncAllArgumentValidation(t *testing.T) {
 	o = opts(st, nil)
 	if _, err := c.SyncAll(ctx, o); err == nil {
 		t.Fatal("network error expected")
+	}
+}
+
+func TestSyncAllLogsPageOK(t *testing.T) {
+	st := syncStore(t)
+	l := &syncLog{}
+	srv, _ := pagedServer(t,
+		SyncResponse{ErrCode: 0, NextCursor: "c1", HasMore: 1, Messages: []SyncMessage{
+			{MsgID: "wx-a", OpenKfID: "kf1", ExternalUserID: "ext-a", Origin: 3, MsgType: "text", Text: &SyncText{Content: "秘密正文"}},
+		}},
+		SyncResponse{ErrCode: 0, NextCursor: "c2", HasMore: 0, Messages: []SyncMessage{
+			{MsgID: "wx-b", OpenKfID: "kf1", Origin: 4, MsgType: "event", Event: json.RawMessage(`{"event_type":"enter_session"}`)},
+		}},
+	)
+	res, err := NewClient(srv.URL, "c", "s").SyncAll(context.Background(), opts(st, l))
+	if err != nil || res.Pages != 2 {
+		t.Fatalf("%+v %v", res, err)
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var pages []map[string]any
+	for i, e := range l.events {
+		if e == "wecom_sync_page_ok" {
+			pages = append(pages, l.fields[i])
+		}
+	}
+	if len(pages) != 2 {
+		t.Fatalf("want 2 wecom_sync_page_ok, got %d in %v", len(pages), l.events)
+	}
+	if pages[0]["binding_id"] != "b1" || pages[0]["scope"] != "sc" || pages[0]["count"] != 1 || pages[0]["has_more"] != true || pages[0]["errcode"] != 0 || pages[0]["page"] != 0 {
+		t.Fatalf("page0 %+v", pages[0])
+	}
+	if pages[1]["count"] != 1 || pages[1]["has_more"] != false || pages[1]["page"] != 1 {
+		t.Fatalf("page1 %+v", pages[1])
+	}
+	for _, f := range pages {
+		blob := fmt.Sprint(f)
+		if strings.Contains(blob, "秘密正文") || strings.Contains(blob, "ext-a") {
+			t.Fatalf("PII leaked: %s", blob)
+		}
 	}
 }
