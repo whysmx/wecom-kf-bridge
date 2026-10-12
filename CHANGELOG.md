@@ -4,25 +4,35 @@
 
 ## [未发布]
 
+## v0.1.6 - 2026-10-12
+
 ### 诊断
 
-- 真机验收 INFO：回调验签解密并受理记 `wecom_callback_accepted`（method/msg_type/wecom_event/open_kfid/has_token/create_time，不含 Token 与客户标识）；`sync_msg` 每页提交成功记 `wecom_sync_page_ok`（binding_id/scope/count/has_more/page/inserted/errcode）；`send_msg` 上游接受并落库 chunk 记 `wecom_send_msg_ok`（binding_id/msgid/outbox_id/chunk/chunks/errcode）。均不记录正文、昵称或 external_userid。字段名用 `wecom_event`（不用 `event`），避免覆盖结构化日志的 event 名（#15）。
-- 配置项 `wecom.treat_48002_as_ai_eligible`（默认 `false`）：**仅联调**。开启后，`kf/service_state/get` 返回 48002 时记 `WARNING_service_state_48002_bypassed` 并返回可区分结果 `AI_ELIGIBLE_48002_BYPASS`：**仅发送路径**视为可发送（不再 70007）；入站 OfficialState / auto-recover **不会**据此清除自动栅栏。本地 HUMAN/WAITING 栅栏下发送仍拦截。其它 errcode（含 48001）/ 网络错误不变。启动记 `WARNING_treat_48002_as_ai_eligible`。**严禁生产开启**。
+- 真机验收 INFO：回调验签解密并受理记 `wecom_callback_accepted`（method/msg_type/wecom_event/open_kfid/has_token/create_time，不含 Token 与客户标识）；`sync_msg` 每页提交成功记 `wecom_sync_page_ok`（binding_id/scope/count/has_more/page/inserted/errcode）；`send_msg` 上游接受并落库 chunk 记 `wecom_send_msg_ok`（binding_id/msgid/outbox_id/chunk/chunks/errcode）。均不记录正文、昵称或 external_userid。字段名用 `wecom_event`（不用 `event`），避免覆盖结构化日志的 event 名（#12、#15）。
+- 配置项 `wecom.treat_48002_as_ai_eligible`（默认 `false`）：**仅联调**。开启后，`kf/service_state/get` 返回 48002 时记 `WARNING_service_state_48002_bypassed` 并返回可区分结果 `AI_ELIGIBLE_48002_BYPASS`：**仅发送路径**视为可发送（不再 70007）；入站 OfficialState / auto-recover **不会**据此清除自动栅栏。本地 HUMAN/WAITING 栅栏下发送仍拦截。其它 errcode（含 48001）/ 网络错误不变。启动记 `WARNING_treat_48002_as_ai_eligible`。**严禁生产开启**（#9）。
 - `kf/service_state/get` 各类失败分别记录日志：`service_state_upstream_errcode`（含官方 errcode/errmsg、open_kfid；48002 附权限排查提示）、`service_state_call_error`（网络/解析）、`service_state_route_error`、`service_state_unmapped`（含官方 service_state 原始整数）、`service_state_not_ai`；日志不含 token、external_userid 或正文。
 - 启动时若 `wecom.service_state_map` 为空或缺少 AI_ELIGIBLE / WAITING_HUMAN / HUMAN，记录 `WARNING_service_state_map_incomplete`（未映射的官方状态一律视为 UNKNOWN，回复会被拦截）。
 
 ### 修复
 
-- 回调受理 INFO 的结构化 event 名不再被 LogFields 的企微 `Event` 覆盖：LogFields 改为 `wecom_event`，StructuredLogger 在合并字段后强制写回 `event`/`ts`/`level`（#15）。
-- SQLite 连接被取消的 ctx「污染」（#5）：modernc.org/sqlite v1.29.8 在语句执行中 ctx 被取消时会对连接调用 sqlite3_interrupt，中断可能泄漏到同一池化连接的下一条语句，导致无关请求（含关停收尾、其他 HTTP 请求）偶发 `interrupted (9)`；复现 3000 次中约 2700 次失败。现在 Store 通过包装驱动不把取消传给 SQLite（取消仍在语句开始前和行之间由 database/sql 生效；语句很短，锁等待由 busy_timeout 限制）。
-- 投递 worker 在 cc-connect 已返回 200 后若恰逢关停取消 ctx，`HTTP_ACCEPTED` 写入失败，消息停在 POSTING、重启后可能重复投递（#5）。状态迁移现在使用脱离取消的 ctx 加 5 秒超时。
-- 真实 `kf/sync_msg` 中 `msgtype=event` 的 `event` 是对象（如 `{"event_type":"enter_session",...}`），此前按字符串解析导致整页同步失败（`sync_failed ... cannot unmarshal object`）。现在 `event` 按原始 JSON 保存（事件只记录、不投递），并可读取 `event_type`。
-- `msg_list` 改为逐条解码：单条无法解析的消息不再拖垮整页，按其 msgid 记为 IGNORED（`unparseable`）并告警（不记录正文），其余消息照常入库投递，游标照常推进；无 msgid 的坏条目只告警跳过，避免同一页无限重试。
-- 发送前官方 `service_state` 非 AI 时写入的本地栅栏此前永不自动解除（`SetHandoverStatus` 拒绝写回 AI_ELIGIBLE），会话结束后客户再次来信也一直 HELD，只能后台手工恢复。现在：官方 4（CLOSED）只拦截本次发送、不写持久栅栏；2/3/未知写入「自动栅栏」（`customers.fence_source='auto'`）；客户再次来信时投递前查询官方状态，若为 0/1 则轮换代际清除栅栏并以新 UID 投递该条（旧 UID/旧 outbox 失效，接管期间已 HELD 的消息保持 HELD）。后台手工转人工为 `manual`，永不自动解除，只能后台恢复。旧库迁移：最近一次接管事件来自 `service_state_precheck` 或状态为 CLOSED 的视为 auto，其余视为 manual。
+- 回调受理 INFO 的结构化 event 名不再被 LogFields 的企微 `Event` 覆盖：LogFields 改为 `wecom_event`，StructuredLogger 在合并字段后强制写回 `event`/`ts`/`level`（#15 / #16）。
+- SQLite 连接被取消的 ctx「污染」（#5 / #7）：modernc.org/sqlite v1.29.8 在语句执行中 ctx 被取消时会对连接调用 sqlite3_interrupt，中断可能泄漏到同一池化连接的下一条语句，导致无关请求（含关停收尾、其他 HTTP 请求）偶发 `interrupted (9)`；复现 3000 次中约 2700 次失败。现在 Store 通过包装驱动不把取消传给 SQLite（取消仍在语句开始前和行之间由 database/sql 生效；语句很短，锁等待由 busy_timeout 限制）。
+- 投递 worker 在 cc-connect 已返回 200 后若恰逢关停取消 ctx，`HTTP_ACCEPTED` 写入失败，消息停在 POSTING、重启后可能重复投递（#5 / #7）。状态迁移现在使用脱离取消的 ctx 加 5 秒超时。
+- 启动迁移超时由 10s 调整为 60s，避免高负载下 `New()` 中 PRAGMA/迁移偶发超时（#8）。
+- 真实 `kf/sync_msg` 中 `msgtype=event` 的 `event` 是对象（如 `{"event_type":"enter_session",...}`），此前按字符串解析导致整页同步失败（`sync_failed ... cannot unmarshal object`）。现在 `event` 按原始 JSON 保存（事件只记录、不投递），并可读取 `event_type`（#1）。
+- `msg_list` 改为逐条解码：单条无法解析的消息不再拖垮整页，按其 msgid 记为 IGNORED（`unparseable`）并告警（不记录正文），其余消息照常入库投递，游标照常推进；无 msgid 的坏条目只告警跳过，避免同一页无限重试（#1）。
+- 发送前官方 `service_state` 非 AI 时写入的本地栅栏此前永不自动解除（`SetHandoverStatus` 拒绝写回 AI_ELIGIBLE），会话结束后客户再次来信也一直 HELD，只能后台手工恢复。现在：官方 4（CLOSED）只拦截本次发送、不写持久栅栏；2/3/未知写入「自动栅栏」（`customers.fence_source='auto'`）；客户再次来信时投递前查询官方状态，若为 0/1 则轮换代际清除栅栏并以新 UID 投递该条（旧 UID/旧 outbox 失效，接管期间已 HELD 的消息保持 HELD）。后台手工转人工为 `manual`，永不自动解除，只能后台恢复。旧库迁移：最近一次接管事件来自 `service_state_precheck` 或状态为 CLOSED 的视为 auto，其余视为 manual（#3）。
 
 ### 文档
 
 - 精简对外文档：README 改为项目介绍；保留架构概览与配置参考；移除设计期专题与评审明细归档（版本说明以本文件为准）。
+
+### 已知不足
+
+- 部分企业应用对 `kf/service_state/get` 仍返回 48002（无权限）；文本联调依赖 `treat_48002_as_ai_eligible`，**严禁生产开启**。
+- 一对一会话能力在上游（cc-connect / Codex），本网关不实现。
+- 管理后台 Web 配置页、入站文件/图片投递（透传 MediaId / 代理 `media/get`）列入下一阶段，本版本未包含。
+- 非文本入站消息仍会入库，但当前标为不支持、不投递给上游。
 
 ## v0.1.5 - 2026-10-10
 
