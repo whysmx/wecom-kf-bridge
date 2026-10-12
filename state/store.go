@@ -238,7 +238,8 @@ func Open(path string) (*Store, error) { return OpenWithOptions(path, Options{})
 
 // Every connection the sqlite driver opens (via OpenWithOptions or a
 // caller-supplied *sql.DB passed to New) runs these pragmas, so foreign keys
-// and the busy timeout hold on every pooled connection (#38).
+// and the busy timeout hold on every pooled connection (#38). OpenWithOptions
+// also sets _txlock=immediate on the DSN (#11).
 const connPragmas = "PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000"
 
 func init() {
@@ -255,9 +256,22 @@ const migrationTimeout = 60 * time.Second
 // enough and keep file handles bounded.
 const MaxOpenConns = 8
 
+// withImmediateTxLock makes every BeginTx use BEGIN IMMEDIATE so a
+// read-then-write transaction cannot hit SQLITE_BUSY_SNAPSHOT (517) after
+// another connection commits (#11). Write-lock waits then honour busy_timeout.
+// Store BeginTx call sites are all read-then-write; plain SELECTs stay
+// outside transactions.
+func withImmediateTxLock(path string) string {
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	return path + sep + "_txlock=immediate"
+}
+
 // OpenWithOptions opens a SQLite file with the supplied options.
 func OpenWithOptions(path string, opts Options) (*Store, error) {
-	db, err := sql.Open(noInterruptDriverName, path)
+	db, err := sql.Open(noInterruptDriverName, withImmediateTxLock(path))
 	if err != nil {
 		return nil, err
 	}
