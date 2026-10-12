@@ -185,7 +185,6 @@ func (a *WeComAdapter) ServiceState(ctx context.Context, b bridge.Binding, c bri
 	return state.CustomerUnknown, nil
 }
 
-
 func (a *WeComAdapter) GetMedia(ctx context.Context, b bridge.Binding, mediaID string) (bridge.MediaDownload, error) {
 	mediaID = strings.TrimSpace(mediaID)
 	if mediaID == "" {

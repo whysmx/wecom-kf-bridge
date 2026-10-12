@@ -139,7 +139,6 @@ func (o SyncOptions) alert(event string, f map[string]any) {
 	}
 }
 
-
 // syncPayload extracts the durable inbox payload for one sync_msg item.
 // Text keeps the plain body; image/file/voice store JSON media metadata
 // (media_id + optional basename-safe file_name). Other types leave payload empty.
@@ -160,7 +159,6 @@ func syncPayload(m SyncMessage) string {
 		return ""
 	}
 }
-
 
 // encodeMediaPayload mirrors bridge.EncodeMediaPayload JSON shape so delivery
 // can DecodeMediaPayload without importing bridge from wecom (no import cycle).

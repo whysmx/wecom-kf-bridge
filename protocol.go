@@ -622,7 +622,6 @@ func (s *Server) sendFailed(ctx context.Context, o state.OutboxMessage, customer
 	}
 }
 
-
 // handleMediaGet authenticates the virtual access_token and proxies
 // WeCom /cgi-bin/media/get with the real corp token. Bodies over MaxMediaBytes
 // are rejected. Logs never include tokens, full media_id, or binary content.
@@ -647,10 +646,10 @@ func (s *Server) handleMediaGet(w http.ResponseWriter, r *http.Request) {
 	md, err := s.cfg.Adapter.GetMedia(ctx, b, mediaID)
 	if err != nil {
 		s.cfg.Logger.Log("media_get_failed", map[string]any{
-			"binding_id":     b.ID,
+			"binding_id":      b.ID,
 			"media_id_prefix": TruncateID(mediaID, 8),
-			"media_id_len":   len(mediaID),
-			"error":          err.Error(),
+			"media_id_len":    len(mediaID),
+			"error":           err.Error(),
 		})
 		var ae errAPI
 		if x, ok := err.(errAPI); ok {
@@ -663,19 +662,19 @@ func (s *Server) handleMediaGet(w http.ResponseWriter, r *http.Request) {
 	}
 	if int64(len(md.Data)) > MaxMediaBytes {
 		s.cfg.Logger.Log("media_get_too_large", map[string]any{
-			"binding_id":     b.ID,
+			"binding_id":      b.ID,
 			"media_id_prefix": TruncateID(mediaID, 8),
-			"media_id_len":   len(mediaID),
-			"size":           len(md.Data),
+			"media_id_len":    len(mediaID),
+			"size":            len(md.Data),
 		})
 		writeAPIError(w, errAPI{ErrCodeParameter, "media too large", http.StatusRequestEntityTooLarge})
 		return
 	}
 	s.cfg.Logger.Log("media_get_ok", map[string]any{
-		"binding_id":     b.ID,
+		"binding_id":      b.ID,
 		"media_id_prefix": TruncateID(mediaID, 8),
-		"media_id_len":   len(mediaID),
-		"size":           len(md.Data),
+		"media_id_len":    len(mediaID),
+		"size":            len(md.Data),
 		"has_disposition": md.ContentDisposition != "",
 	})
 	if md.ContentType != "" {

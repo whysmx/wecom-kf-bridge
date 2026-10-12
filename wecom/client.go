@@ -633,7 +633,6 @@ func (c *Client) SendText(ctx context.Context, accessToken, toUser, openKfID, te
 	return c.SendTextChunked(ctx, accessToken, SendRequest{ToUser: toUser, OpenKfID: openKfID, MsgType: "text"}, text)
 }
 
-
 // MaxMediaBytes is the default body cap for GetMedia (25 MiB).
 const MaxMediaBytes int64 = 25 << 20
 

@@ -295,7 +295,6 @@ func (d *DeliveryWorker) autoRecover(ctx context.Context, c state.Customer, m st
 
 const stepTimeout = 5 * time.Second
 
-
 // buildInboundCallback maps an inbox row to the cc-connect WeCom XML contract:
 // text keeps Content; image/file/voice carry MsgType + MediaId (+ FileName for file).
 func buildInboundCallback(uid, agentID string, m state.InboxMessage) (bridge.InboundMessage, error) {
