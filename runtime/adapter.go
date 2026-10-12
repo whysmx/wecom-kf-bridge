@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -182,6 +183,24 @@ func (a *WeComAdapter) ServiceState(ctx context.Context, b bridge.Binding, c bri
 	}
 	a.log("service_state_unmapped", map[string]any{"binding_id": b.ID, "service_state": resp.ServiceState, "mapped": state.CustomerUnknown})
 	return state.CustomerUnknown, nil
+}
+
+func (a *WeComAdapter) GetMedia(ctx context.Context, b bridge.Binding, mediaID string) (bridge.MediaDownload, error) {
+	mediaID = strings.TrimSpace(mediaID)
+	if mediaID == "" {
+		return bridge.MediaDownload{}, fmt.Errorf("runtime: media_id required")
+	}
+	_, cl, tc, err := a.route(b.ID)
+	if err != nil {
+		return bridge.MediaDownload{}, err
+	}
+	return withToken(ctx, tc, func(tok string) (bridge.MediaDownload, error) {
+		md, err := cl.GetMedia(ctx, tok, mediaID, bridge.MaxMediaBytes)
+		if err != nil {
+			return bridge.MediaDownload{}, err
+		}
+		return bridge.MediaDownload{Data: md.Data, ContentType: md.ContentType, ContentDisposition: md.ContentDisposition}, nil
+	})
 }
 
 func (a *WeComAdapter) SendText(ctx context.Context, req bridge.SendRequest) (string, error) {

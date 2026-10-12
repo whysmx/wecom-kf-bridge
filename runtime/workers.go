@@ -295,6 +295,35 @@ func (d *DeliveryWorker) autoRecover(ctx context.Context, c state.Customer, m st
 
 const stepTimeout = 5 * time.Second
 
+// buildInboundCallback maps an inbox row to the cc-connect WeCom XML contract:
+// text keeps Content; image/file/voice carry MsgType + MediaId (+ FileName for file).
+func buildInboundCallback(uid, agentID string, m state.InboxMessage) (bridge.InboundMessage, error) {
+	msg := bridge.InboundMessage{
+		FromUserName: uid,
+		CreateTime:   m.CreateTime.Unix(),
+		MsgType:      m.Type,
+		MsgID:        fmt.Sprint(m.CompatMsgID),
+		AgentID:      agentID,
+	}
+	switch strings.ToLower(strings.TrimSpace(m.Type)) {
+	case "text":
+		msg.Content = m.PayloadRef
+		return msg, nil
+	case "image", "voice", "file":
+		mp, ok := bridge.DecodeMediaPayload(m.PayloadRef)
+		if !ok || mp.MediaID == "" {
+			return msg, fmt.Errorf("missing_media_id")
+		}
+		msg.MediaID = mp.MediaID
+		if strings.EqualFold(m.Type, "file") {
+			msg.FileName = bridge.SafeFileName(mp.FileName)
+		}
+		return msg, nil
+	default:
+		return msg, fmt.Errorf("type:%s", m.Type)
+	}
+}
+
 // deliver advances one message; false means later messages of the same
 // customer must wait.
 func (d *DeliveryWorker) deliver(ctx context.Context, m state.InboxMessage) bool {
@@ -313,8 +342,13 @@ func (d *DeliveryWorker) deliver(ctx context.Context, m state.InboxMessage) bool
 		return true
 	}
 	if m.State == state.InboxReceived {
-		if m.Type != "text" {
+		if !bridge.DeliverableMsgType(m.Type) {
 			return step(state.InboxUnsupported, "type:"+m.Type)
+		}
+		if m.Type != "text" {
+			if mp, ok := bridge.DecodeMediaPayload(m.PayloadRef); !ok || mp.MediaID == "" {
+				return step(state.InboxUnsupported, "missing_media_id")
+			}
 		}
 		if !step(state.InboxClassified, "") {
 			return false
@@ -341,7 +375,11 @@ func (d *DeliveryWorker) deliver(ctx context.Context, m state.InboxMessage) bool
 	if target == "" {
 		return step(state.InboxHeld, "no_callback_url")
 	}
-	cb, err := d.Server.BuildCallback(m.BindingID, bridge.InboundMessage{FromUserName: c.UID, CreateTime: m.CreateTime.Unix(), MsgType: "text", Content: m.PayloadRef, MsgID: fmt.Sprint(m.CompatMsgID), AgentID: agentID})
+	inbound, err := buildInboundCallback(c.UID, agentID, m)
+	if err != nil {
+		return step(state.InboxUnsupported, err.Error())
+	}
+	cb, err := d.Server.BuildCallback(m.BindingID, inbound)
 	if err != nil {
 		return step(state.InboxHeld, "build_failed")
 	}

@@ -26,6 +26,8 @@ type fakeAdapter struct {
 	sendErrAt int // 1-based chunk that fails; 0 = never
 	sendErr   error
 	sends     []SendRequest
+	media     map[string]MediaDownload
+	mediaErr  error
 }
 
 func (a *fakeAdapter) GetUser(_ context.Context, _ Binding, c Customer) (Customer, error) {
@@ -52,6 +54,20 @@ func (a *fakeAdapter) SendText(_ context.Context, r SendRequest) (string, error)
 	}
 	a.sends = append(a.sends, r)
 	return "wx-" + string(rune('0'+r.Chunk)), nil
+}
+func (a *fakeAdapter) GetMedia(_ context.Context, _ Binding, mediaID string) (MediaDownload, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.mediaErr != nil {
+		return MediaDownload{}, a.mediaErr
+	}
+	if a.media == nil {
+		return MediaDownload{}, errNoAdapter
+	}
+	if md, ok := a.media[mediaID]; ok {
+		return md, nil
+	}
+	return MediaDownload{}, errAPI{ErrCodeParameter, "media not found", http.StatusNotFound}
 }
 func (a *fakeAdapter) sent() []SendRequest {
 	a.mu.Lock()

@@ -116,7 +116,7 @@ func TestDeliveryWorkerPaths(t *testing.T) {
 	}
 	now := time.Now()
 	_, err = st.CommitSyncPage(ctx, "sc", "c1", false, []state.InboxMessage{
-		{BindingID: "b1", ExternalMsgID: "img", CustomerID: c.ID, Generation: 1, Type: "image", CreateTime: now},
+		{BindingID: "b1", ExternalMsgID: "vid", CustomerID: c.ID, Generation: 1, Type: "video", CreateTime: now},
 		{BindingID: "b1", ExternalMsgID: "t1", CustomerID: c.ID, Generation: 1, Type: "text", PayloadRef: "q1", CreateTime: now},
 		{BindingID: "b1", ExternalMsgID: "t2", CustomerID: c.ID, Generation: 1, Type: "text", PayloadRef: "q2", CreateTime: now},
 	})
@@ -126,8 +126,8 @@ func TestDeliveryWorkerPaths(t *testing.T) {
 	d := &DeliveryWorker{Store: st, Server: srv, CallbackURL: map[string]string{"b1": cc.URL}, AgentID: map[string]string{}, HTTP: cc.Client(), MaxAttempts: 3, MaxConc: 2, Logger: nopRuntimeLogger{}, Interval: time.Hour}
 	d.DeliverOnce(ctx)
 	get := func(id string) state.InboxMessage { m, _ := st.InboxByExternalID(ctx, "sc", id); return m }
-	if get("img").State != state.InboxUnsupported || get("t1").State != state.InboxDeliveryUnknown || get("t2").State != state.InboxReceived {
-		t.Fatalf("%s %s %s", get("img").State, get("t1").State, get("t2").State)
+	if get("vid").State != state.InboxUnsupported || get("t1").State != state.InboxDeliveryUnknown || get("t2").State != state.InboxReceived {
+		t.Fatalf("%s %s %s", get("vid").State, get("t1").State, get("t2").State)
 	}
 	// connection refused -> RETRY_WAIT (provably not delivered)
 	d.CallbackURL["b1"] = "http://127.0.0.1:1/cb"

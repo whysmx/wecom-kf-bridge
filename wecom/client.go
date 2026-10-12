@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -128,6 +129,12 @@ func notConnected(err error) bool {
 // do sends a request built by mk, applying rate limiting and bounded,
 // exponential backoff retries according to the side-effect rules above.
 func (c *Client) do(ctx context.Context, path string, mk func() (*http.Request, error), limit int64) (int, []byte, error) {
+	status, raw, _, err := c.doHeaders(ctx, path, mk, limit)
+	return status, raw, err
+}
+
+// doHeaders is do plus response headers (needed for media/get Content-Disposition).
+func (c *Client) doHeaders(ctx context.Context, path string, mk func() (*http.Request, error), limit int64) (int, []byte, http.Header, error) {
 	hc := c.httpClient()
 	c.init()
 	backoff := c.Backoff
@@ -141,12 +148,12 @@ func (c *Client) do(ctx context.Context, path string, mk func() (*http.Request, 
 	for attempt := 0; ; attempt++ {
 		if c.limiter != nil {
 			if err := c.limiter.wait(ctx, c.sleep); err != nil {
-				return 0, nil, err
+				return 0, nil, nil, err
 			}
 		}
 		req, err := mk()
 		if err != nil {
-			return 0, nil, err
+			return 0, nil, nil, err
 		}
 		resp, err := hc.Do(req)
 		var ue *url.Error
@@ -158,10 +165,12 @@ func (c *Client) do(ctx context.Context, path string, mk func() (*http.Request, 
 		retry := false
 		var status int
 		var raw []byte
+		var hdr http.Header
 		if err != nil {
 			retry = notConnected(err) || !sideEffectPaths[path]
 		} else {
 			status = resp.StatusCode
+			hdr = resp.Header.Clone()
 			raw, err = io.ReadAll(io.LimitReader(resp.Body, limit))
 			resp.Body.Close()
 			if err == nil && (status == http.StatusTooManyRequests || status >= 500) && !sideEffectPaths[path] {
@@ -169,16 +178,16 @@ func (c *Client) do(ctx context.Context, path string, mk func() (*http.Request, 
 			}
 		}
 		if !retry || attempt >= c.MaxRetries || ctx.Err() != nil {
-			return status, raw, err
+			return status, raw, hdr, err
 		}
 		if c.Logger != nil {
 			c.Logger.Log("wecom_api_retry", map[string]any{"path": path, "attempt": attempt + 1, "status": status})
 		}
 		if e := c.sleep(ctx, backoff); e != nil {
 			if err == nil {
-				return status, raw, nil
+				return status, raw, hdr, nil
 			}
-			return status, raw, err
+			return status, raw, hdr, err
 		}
 		backoff *= 2
 		if backoff > maxB {
@@ -400,6 +409,14 @@ type SyncRequest struct {
 type SyncText struct {
 	Content string `json:"content"`
 }
+
+// SyncMedia is the nested payload of image / voice / video / file sync_msg items.
+// Official KF docs only guarantee media_id; filename is accepted when present.
+type SyncMedia struct {
+	MediaID  string `json:"media_id"`
+	Filename string `json:"filename,omitempty"`
+}
+
 type SyncMessage struct {
 	MsgID          string `json:"msgid"`
 	OpenKfID       string `json:"open_kfid"`
@@ -411,9 +428,33 @@ type SyncMessage struct {
 	// events are recorded only, so it is kept raw.
 	Event   json.RawMessage `json:"event,omitempty"`
 	Text    *SyncText       `json:"text,omitempty"`
+	Image   *SyncMedia      `json:"image,omitempty"`
+	Voice   *SyncMedia      `json:"voice,omitempty"`
+	Video   *SyncMedia      `json:"video,omitempty"`
+	File    *SyncMedia      `json:"file,omitempty"`
 	Content string          `json:"content,omitempty"`
-	MediaID string          `json:"media_id,omitempty"`
+	MediaID string          `json:"media_id,omitempty"` // legacy top-level; prefer nested
 	Raw     json.RawMessage `json:"-"`
+}
+
+// NestedMedia returns media_id and optional filename for image/voice/file
+// messages. Nested objects win over a legacy top-level media_id.
+func (m SyncMessage) NestedMedia() (mediaID, filename string) {
+	var sm *SyncMedia
+	switch strings.ToLower(strings.TrimSpace(m.MsgType)) {
+	case "image":
+		sm = m.Image
+	case "voice":
+		sm = m.Voice
+	case "video":
+		sm = m.Video
+	case "file":
+		sm = m.File
+	}
+	if sm != nil && strings.TrimSpace(sm.MediaID) != "" {
+		return strings.TrimSpace(sm.MediaID), strings.TrimSpace(sm.Filename)
+	}
+	return strings.TrimSpace(m.MediaID), ""
 }
 
 // EventType returns event.event_type, or "" if absent/unparseable.
@@ -590,6 +631,71 @@ func (c *Client) SendTextChunked(ctx context.Context, accessToken string, req Se
 // text. It uses the contractual 2,000 UTF-8 byte chunk size.
 func (c *Client) SendText(ctx context.Context, accessToken, toUser, openKfID, text string) ([]SendResponse, error) {
 	return c.SendTextChunked(ctx, accessToken, SendRequest{ToUser: toUser, OpenKfID: openKfID, MsgType: "text"}, text)
+}
+
+// MaxMediaBytes is the default body cap for GetMedia (25 MiB).
+const MaxMediaBytes int64 = 25 << 20
+
+// MediaDownload is a temporary media file fetched via /cgi-bin/media/get.
+type MediaDownload struct {
+	Data               []byte
+	ContentType        string
+	ContentDisposition string
+}
+
+// GetMedia proxies WeCom temporary media. maxBytes defaults to MaxMediaBytes.
+// JSON errcode bodies are returned as APIError; oversized bodies are rejected.
+// The response body bytes are never logged.
+func (c *Client) GetMedia(ctx context.Context, accessToken, mediaID string, maxBytes int64) (MediaDownload, error) {
+	var zero MediaDownload
+	accessToken = strings.TrimSpace(accessToken)
+	mediaID = strings.TrimSpace(mediaID)
+	if accessToken == "" || mediaID == "" {
+		return zero, fmt.Errorf("%w: access_token and media_id required", ErrInvalidArgument)
+	}
+	if maxBytes <= 0 {
+		maxBytes = MaxMediaBytes
+	}
+	u, err := c.endpoint("/cgi-bin/media/get")
+	if err != nil {
+		return zero, err
+	}
+	q := url.Values{"access_token": {accessToken}, "media_id": {mediaID}}
+	u += "?" + q.Encode()
+	status, raw, hdr, e := c.doHeaders(ctx, "/cgi-bin/media/get", func() (*http.Request, error) {
+		return http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	}, maxBytes+1)
+	if e != nil {
+		return zero, e
+	}
+	ct, cd := "", ""
+	if hdr != nil {
+		ct, cd = hdr.Get("Content-Type"), hdr.Get("Content-Disposition")
+	}
+	if mediaJSONError(ct, raw) {
+		if err := checkEnvelope(raw, status, "/cgi-bin/media/get"); err != nil {
+			return zero, err
+		}
+		return zero, fmt.Errorf("%w: unexpected json media body", ErrResponse)
+	}
+	if status < 200 || status >= 300 {
+		return zero, &APIError{Code: status, Message: "http error", HTTPStatus: status, Path: "/cgi-bin/media/get"}
+	}
+	if int64(len(raw)) > maxBytes {
+		return zero, fmt.Errorf("%w: media exceeds %d bytes", ErrResponse, maxBytes)
+	}
+	return MediaDownload{Data: raw, ContentType: ct, ContentDisposition: cd}, nil
+}
+
+func mediaJSONError(contentType string, data []byte) bool {
+	mt, _, _ := mime.ParseMediaType(contentType)
+	switch mt {
+	case "application/json", "text/plain", "":
+		trimmed := bytes.TrimSpace(data)
+		return len(trimmed) > 0 && trimmed[0] == '{' && bytes.Contains(trimmed, []byte(`"errcode"`))
+	default:
+		return false
+	}
 }
 
 // RedactURL drops userinfo, query and fragment: scheme://host/path only.

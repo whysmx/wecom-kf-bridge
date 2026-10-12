@@ -117,6 +117,9 @@ type Adapter interface {
 	ServiceState(context.Context, Binding, Customer) (string, error)
 	// SendText sends one chunk and returns the upstream msgid.
 	SendText(context.Context, SendRequest) (string, error)
+	// GetMedia proxies WeCom /cgi-bin/media/get with the real corp token.
+	// Callers must enforce MaxMediaBytes; implementations never log body bytes.
+	GetMedia(ctx context.Context, b Binding, mediaID string) (MediaDownload, error)
 }
 
 // Store is the durable state the protocol layer needs; *state.Store
@@ -148,6 +151,9 @@ func (unavailableAdapter) ServiceState(context.Context, Binding, Customer) (stri
 }
 func (unavailableAdapter) SendText(context.Context, SendRequest) (string, error) {
 	return "", &SendError{Kind: SendUnavailable, Err: errNoAdapter}
+}
+func (unavailableAdapter) GetMedia(context.Context, Binding, string) (MediaDownload, error) {
+	return MediaDownload{}, errNoAdapter
 }
 
 type Config struct {
@@ -328,6 +334,8 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleUserGet(w, r)
 	case "/cgi-bin/message/send":
 		s.handleMessageSend(w, r)
+	case "/cgi-bin/media/get":
+		s.handleMediaGet(w, r)
 	default:
 		writeAPIError(w, errAPI{ErrCodeParameter, "not found", http.StatusNotFound})
 	}
@@ -612,6 +620,74 @@ func (s *Server) sendFailed(ctx context.Context, o state.OutboxMessage, customer
 		_ = s.cfg.Store.ReleaseBudget(bg, customerID, total-sent-1)
 		return errAPI{ErrCodeUnknown, "send result unknown" + suffix, http.StatusBadGateway}
 	}
+}
+
+// handleMediaGet authenticates the virtual access_token and proxies
+// WeCom /cgi-bin/media/get with the real corp token. Bodies over MaxMediaBytes
+// are rejected. Logs never include tokens, full media_id, or binary content.
+func (s *Server) handleMediaGet(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeAPIError(w, errAPI{ErrCodeParameter, "method not allowed", http.StatusMethodNotAllowed})
+		return
+	}
+	tok := r.URL.Query().Get("access_token")
+	b, e := s.findByToken(tok)
+	if e != nil {
+		writeAPIError(w, e)
+		return
+	}
+	mediaID := strings.TrimSpace(r.URL.Query().Get("media_id"))
+	if mediaID == "" {
+		writeAPIError(w, errAPI{ErrCodeParameter, "media_id required", http.StatusBadRequest})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	md, err := s.cfg.Adapter.GetMedia(ctx, b, mediaID)
+	if err != nil {
+		s.cfg.Logger.Log("media_get_failed", map[string]any{
+			"binding_id":      b.ID,
+			"media_id_prefix": TruncateID(mediaID, 8),
+			"media_id_len":    len(mediaID),
+			"error":           err.Error(),
+		})
+		var ae errAPI
+		if x, ok := err.(errAPI); ok {
+			ae = x
+		} else {
+			ae = errAPI{ErrCodeUnavailable, "media unavailable", http.StatusBadGateway}
+		}
+		writeAPIError(w, ae)
+		return
+	}
+	if int64(len(md.Data)) > MaxMediaBytes {
+		s.cfg.Logger.Log("media_get_too_large", map[string]any{
+			"binding_id":      b.ID,
+			"media_id_prefix": TruncateID(mediaID, 8),
+			"media_id_len":    len(mediaID),
+			"size":            len(md.Data),
+		})
+		writeAPIError(w, errAPI{ErrCodeParameter, "media too large", http.StatusRequestEntityTooLarge})
+		return
+	}
+	s.cfg.Logger.Log("media_get_ok", map[string]any{
+		"binding_id":      b.ID,
+		"media_id_prefix": TruncateID(mediaID, 8),
+		"media_id_len":    len(mediaID),
+		"size":            len(md.Data),
+		"has_disposition": md.ContentDisposition != "",
+	})
+	if md.ContentType != "" {
+		w.Header().Set("Content-Type", md.ContentType)
+	} else {
+		w.Header().Set("Content-Type", "application/octet-stream")
+	}
+	if md.ContentDisposition != "" {
+		w.Header().Set("Content-Disposition", md.ContentDisposition)
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(md.Data)
 }
 
 func (s *Server) BuildCallback(bindingID string, m InboundMessage) (Callback, error) {

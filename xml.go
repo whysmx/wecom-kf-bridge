@@ -19,6 +19,7 @@ type InboundMessage struct {
 	EventKey     string   `xml:"EventKey,omitempty"`
 	MediaID      string   `xml:"MediaId,omitempty"`
 	Format       string   `xml:"Format,omitempty"`
+	FileName     string   `xml:"FileName,omitempty"`
 }
 
 type callbackXML struct {
@@ -34,6 +35,7 @@ type callbackXML struct {
 	EventKey     string   `xml:"EventKey,omitempty"`
 	MediaID      string   `xml:"MediaId,omitempty"`
 	Format       string   `xml:"Format,omitempty"`
+	FileName     string   `xml:"FileName,omitempty"`
 }
 
 type CallbackEnvelope struct {
@@ -51,7 +53,7 @@ type Callback struct {
 }
 
 func marshalInbound(m InboundMessage) ([]byte, error) {
-	return xml.Marshal(callbackXML{ToUserName: m.ToUserName, FromUserName: m.FromUserName, CreateTime: m.CreateTime, MsgType: m.MsgType, Content: m.Content, MsgID: m.MsgID, AgentID: m.AgentID, Event: m.Event, EventKey: m.EventKey, MediaID: m.MediaID, Format: m.Format})
+	return xml.Marshal(callbackXML{ToUserName: m.ToUserName, FromUserName: m.FromUserName, CreateTime: m.CreateTime, MsgType: m.MsgType, Content: m.Content, MsgID: m.MsgID, AgentID: m.AgentID, Event: m.Event, EventKey: m.EventKey, MediaID: m.MediaID, Format: m.Format, FileName: m.FileName})
 }
 func unmarshalInbound(b []byte) (InboundMessage, error) {
 	var m InboundMessage
