@@ -250,8 +250,10 @@ func TestAdminConsoleEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer g.Close()
-	if b, _ := g.Store.Binding(context.Background(), "b1"); b.CallbackURL != cb || b.Revision != 2 {
-		t.Fatal("config bootstrap overwrote console changes", b)
+	// #18: config-listed bindings re-apply mutable fields from JSON on start
+	// (console rebind of b1 is overwritten). Console-only b2 is untouched.
+	if b, _ := g.Store.Binding(context.Background(), "b1"); b.CallbackURL != cfg.Bindings[0].CallbackURL || !b.Active {
+		t.Fatal("config binding not re-synced from JSON after restart", b)
 	}
 	if gettoken(t, g.Handler, corp2, secret2) != 0 {
 		t.Fatal("console-created binding not restored with its rotated credentials")

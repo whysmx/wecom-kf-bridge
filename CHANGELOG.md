@@ -4,6 +4,10 @@
 
 ## [未发布]
 
+### 修复
+
+- 配置 `bindings[].disabled: true` 对**已存在**的 SQLite 绑定生效：启动 bootstrap 会把 `active`/project/callback 与配置对齐并升 revision；`disabled→inactive` 记 `binding_config_disabled`。配置中的绑定以 JSON 为准（控制台对该绑定的停用/改绑在下次启动会被配置覆盖）；仅存在于库中的控制台绑定不受影响（#18）。
+
 ### 新增
 
 - 入站文件/图片/语音：解析 `kf/sync_msg` 嵌套 `media_id`（`image`/`file`/`voice`），投递给 cc-connect 的加密 XML 带真实 `MsgType` + `MediaId`（`file` 另带 basename 安全的 `FileName`）；非法类型仍标 `UNSUPPORTED`。
