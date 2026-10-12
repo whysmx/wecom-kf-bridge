@@ -6,6 +6,7 @@
 
 ### 修复
 
+- 依赖：`modernc.org/sqlite` v1.29.8 → **v1.60.1**（配套 `modernc.org/libc` v1.77.1）；含 WAL `-shm` 读故障不再进程崩溃、context 取消后 Rows 泄漏导致 checkpoint 饿死等修复。Go 工具链升至 **1.26**（驱动要求）。本地 `go test -race -count=20 ./admin ./state ./runtime` 压测通过（#6）。
 - 系统设置写回 `config.json`：Windows 上目标已存在时 `os.Rename` 会失败；改为 Remove+Rename 回退（`replaceFile`），并拒绝空/`{}` 的 `service_state_map` 以免误清空；热加载只调用一次 `ApplyEditableSettings`（#25 / #26）。
 
 ### 新增
