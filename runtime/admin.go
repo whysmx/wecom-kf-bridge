@@ -359,6 +359,119 @@ func (g *Gateway) applyEditableSettings(s admin.EditableSettings) {
 	}
 }
 
+func editableBindingFrom(b BindingConfig) admin.EditableBindingConfig {
+	return admin.EditableBindingConfig{
+		ID: b.ID, EnterpriseID: b.EnterpriseID, OpenKfID: b.OpenKfID,
+		ProjectID: b.ProjectID, VirtualCorpID: b.VirtualCorpID, AgentID: b.AgentID,
+		CallbackURL: b.CallbackURL, Disabled: b.Disabled,
+		VirtualSecretEnv: b.VirtualSecretEnv, CallbackTokenEnv: b.CallbackTokenEnv,
+		CallbackAESKeyEnv: b.CallbackAESKeyEnv, CredentialRevision: b.CredentialRevision,
+	}
+}
+
+func (r consoleRuntime) ConfigBindings() []admin.EditableBindingConfig {
+	r.g.cfgMu.RLock()
+	defer r.g.cfgMu.RUnlock()
+	out := make([]admin.EditableBindingConfig, 0, len(r.g.liveCfg.Bindings))
+	for _, b := range r.g.liveCfg.Bindings {
+		out = append(out, editableBindingFrom(b))
+	}
+	return out
+}
+
+func (r consoleRuntime) SaveBindingConfig(ctx context.Context, id string, patch admin.BindingConfigPatch) error {
+	path := r.g.configPath
+	if path == "" {
+		return errors.New("config path unknown; cannot persist binding")
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		return err
+	}
+	idx := -1
+	for i, b := range cfg.Bindings {
+		if b.ID == id {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return fmt.Errorf("binding %s not in config.json", id)
+	}
+	cur := cfg.Bindings[idx]
+	if patch.EnterpriseID != cur.EnterpriseID || patch.OpenKfID != cur.OpenKfID {
+		return errors.New("enterprise_id/open_kfid 不可修改")
+	}
+	project := strings.TrimSpace(patch.ProjectID)
+	vcorp := strings.TrimSpace(patch.VirtualCorpID)
+	agent := strings.TrimSpace(patch.AgentID)
+	cb := strings.TrimSpace(patch.CallbackURL)
+	if project == "" || vcorp == "" || agent == "" || cb == "" {
+		return errors.New("project_id、virtual_corp_id、agent_id、callback_url 不能为空")
+	}
+	cur.ProjectID = project
+	cur.VirtualCorpID = vcorp
+	cur.AgentID = agent
+	cur.CallbackURL = cb
+	cur.Disabled = patch.Disabled
+	cfg.Bindings[idx] = cur
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	if err := WriteConfigFile(path, cfg); err != nil {
+		return err
+	}
+	return r.g.applyBindingConfig(ctx, cur)
+}
+
+// applyBindingConfig hot-reloads one config binding: liveCfg, SQLite via
+// bootstrapBinding, then register/ApplyBinding for delivery + virtual API (#29).
+// Sealed virtual corp_id stays as stored until rotate; agent_id/callback/project/disabled apply immediately.
+func (g *Gateway) applyBindingConfig(ctx context.Context, bc BindingConfig) error {
+	g.cfgMu.Lock()
+	found := false
+	for i := range g.liveCfg.Bindings {
+		if g.liveCfg.Bindings[i].ID == bc.ID {
+			g.liveCfg.Bindings[i] = bc
+			found = true
+			break
+		}
+	}
+	if !found {
+		g.liveCfg.Bindings = append(g.liveCfg.Bindings, bc)
+	}
+	g.cfgMu.Unlock()
+
+	var logger Logger = nopRuntimeLogger{}
+	if g.Sync != nil && g.Sync.Logger != nil {
+		logger = g.Sync.Logger
+	}
+	sb, err := g.bootstrapBinding(ctx, state.Binding{
+		ID: bc.ID, EnterpriseID: bc.EnterpriseID, OpenKfID: bc.OpenKfID,
+		ProjectID: bc.ProjectID, CallbackURL: bc.CallbackURL, Active: !bc.Disabled,
+	}, logger)
+	if err != nil {
+		return err
+	}
+	vb := g.withStoredCredentials(ctx, bridge.Binding{ID: bc.ID, AgentID: bc.AgentID})
+	if vb.CorpID == "" {
+		vb, err = g.bindingCredentials(ctx, bc, sb)
+		if err != nil {
+			return err
+		}
+	} else {
+		vb.AgentID = bc.AgentID
+	}
+	if err := g.register(ctx, sb, vb); err != nil {
+		return err
+	}
+	if g.Server == nil {
+		return nil
+	}
+	vb.Enabled, vb.Revision = sb.Active, sb.Revision
+	return g.Server.ApplyBinding(vb)
+}
+
 func (g *Gateway) buildAdmin(cfg Config) (http.Handler, error) {
 	hash, err := secretEnv(cfg.Admin.PasswordHashEnv)
 	if err != nil {

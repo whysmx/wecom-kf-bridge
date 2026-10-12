@@ -64,6 +64,10 @@ type Runtime interface {
 	EditableSettings() EditableSettings
 	// SaveSettings persists editable knobs (config file) and hot-applies them (#25).
 	SaveSettings(ctx context.Context, s EditableSettings) error
+	// ConfigBindings returns bindings present in config.json (live view) (#29).
+	ConfigBindings() []EditableBindingConfig
+	// SaveBindingConfig writes editable binding fields to config.json and hot-applies (#29).
+	SaveBindingConfig(ctx context.Context, id string, patch BindingConfigPatch) error
 }
 
 // EditableSettings are the knobs the system-settings page may change (#25).
@@ -72,6 +76,35 @@ type EditableSettings struct {
 	Treat48002AsAIEligible bool
 	ServiceStateMap        map[string]string // official int as string → internal state
 	PublicBaseURL          string
+}
+
+// EditableBindingConfig is the config.json binding surface shown on the bindings page (#29).
+// Env names are display-only; secrets are never included.
+type EditableBindingConfig struct {
+	ID                 string
+	EnterpriseID       string
+	OpenKfID           string
+	ProjectID          string
+	VirtualCorpID      string
+	AgentID            string
+	CallbackURL        string
+	Disabled           bool
+	VirtualSecretEnv   string
+	CallbackTokenEnv   string
+	CallbackAESKeyEnv  string
+	CredentialRevision int64
+}
+
+// BindingConfigPatch is the mutable subset a bindings form may submit (#29).
+// EnterpriseID/OpenKfID are echoed for immutability checks and must match config.
+type BindingConfigPatch struct {
+	EnterpriseID  string
+	OpenKfID      string
+	ProjectID     string
+	VirtualCorpID string
+	AgentID       string
+	CallbackURL   string
+	Disabled      bool
 }
 
 // Setting is one displayed configuration value (never a secret value).

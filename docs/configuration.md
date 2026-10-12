@@ -42,6 +42,19 @@
 
 持久化：安全写回 `WECOM_KF_BRIDGE_CONFIG` 指向的 `config.json`，并**热加载**到运行中的适配器/控制台（无需重启）。Secret/Token/AES 仍只显示环境变量名，不可在此页改明文（轮换走绑定页）。
 
+## 2.2 管理后台绑定配置在线保存（绑定页）
+
+`/admin/bindings` 对**已出现在 `config.json` 的绑定**提供「配置绑定」表单（POST `/admin/bindings/{id}/config-save`，需 CSRF + 会话 + **二次认证**；内网免登会话跳过输密）。仅库中、未写入配置的控制台绑定不显示此表单。
+
+| 字段 | 可编辑？ | 说明 |
+|---|---|---|
+| `project_id` / `virtual_corp_id` / `agent_id` / `callback_url` | 是 | 写回配置并热加载；`callback_url` 须落在 `callback_targets` |
+| `disabled` | 是 | 写入配置后 bootstrap 对齐 SQLite `Active`（`disabled:true` → inactive，升 revision）；与页上「启用/停用」并存时，**保存配置后以 `config.disabled` 为准** |
+| `id` / `enterprise_id` / `open_kfid` | 否 | 提交若与现网配置不一致则拒绝 |
+| `virtual_secret_env` / `callback_token_env` / `callback_aes_key_env` / `credential_revision` | 否 | 只读显示 env 名；密钥明文不可见、不可改（轮换仍走「轮换虚拟凭证」） |
+
+热加载：更新 `liveCfg.Bindings` → `bootstrapBinding`（project/callback/active）→ `register` / `ApplyBinding`（投递目标与虚拟 API）。**边界**：已密封入库的虚拟 `corp_id` 仍以数据库为准，改 `virtual_corp_id` 只更新配置/liveCfg；要换运行时虚拟企业请走轮换。配置保存**不会**像「改绑」那样轮换客户代际。写盘沿用 `WriteConfigFile` / `replaceFile`（Windows 安全覆盖）。
+
 ## 3. 管理后台（`admin`）
 
 未配置 `admin` 则不启动后台。启用时：
@@ -65,7 +78,7 @@
 | `virtual_corp_id` / `agent_id` | 给 cc-connect 的虚拟企业与应用 ID |
 | `virtual_secret_env` 等 | 见上文「首次初始化」 |
 | `callback_url` | 网关访问 cc-connect 的完整回调 URL；host:port 必须落在 `callback_targets` |
-| `disabled` | 默认 `false`。为 `true` 时该配置绑定启动后为 inactive（停发令牌、栅栏在途发送）。对**已存在**行同样生效（升 revision）。配置里列出的绑定每次启动会把 `active`/project/callback 与 JSON 对齐；仅库中的控制台绑定不受此字段影响 |
+| `disabled` | 默认 `false`。为 `true` 时该配置绑定启动后为 inactive（停发令牌、栅栏在途发送）。对**已存在**行同样生效（升 revision）。配置里列出的绑定每次启动会把 `active`/project/callback 与 JSON 对齐；仅库中的控制台绑定不受此字段影响。也可在绑定页在线保存并热加载（见 §2.2） |
 
 一次性导出（管理后台）按 cc-connect WeChat Work 表单给出：`corp_id`、`corp_secret`、`agent_id`、`callback_token`、`callback_aes_key`、`port`、`callback_path`、`api_base_url`、`allow_from`。
 
