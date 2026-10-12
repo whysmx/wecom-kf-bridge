@@ -187,6 +187,9 @@ func (g *Gateway) wire(ctx context.Context, cfg Config, logger Logger) error {
 	}
 	g.Server = srv
 	g.Delivery.Server = srv
+	// OfficialState uses ServiceState as-is. A 48002 bypass returns
+	// AI_ELIGIBLE_48002_BYPASS (not AI_ELIGIBLE), so auto-recover will not
+	// clear fences when the joint-debug switch is on.
 	g.Delivery.OfficialState = func(ctx context.Context, bindingID string, c state.Customer) (string, error) {
 		return adapter.ServiceState(ctx, bridge.Binding{ID: bindingID}, bridge.Customer{ExternalUserID: c.ExternalUserID})
 	}

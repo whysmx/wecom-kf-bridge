@@ -30,3 +30,18 @@ func TestSendOfficialClosedBlocksOnlyThisSend(t *testing.T) {
 		t.Fatalf("human: %s/%s", c.State, c.FenceSource)
 	}
 }
+
+// P2: treat_48002 bypass only affects the official query result. A local
+// HUMAN/WAITING fence still blocks CreateOutbox / send (70006).
+func TestSendStillBlocksWhenLocalHumanDespite48002Bypass(t *testing.T) {
+	e := newEnv(t)
+	tok := e.token()
+	_ = e.st.SetHandoverStatus(context.Background(), e.cust.ID, state.CustomerHuman, "service_state_precheck")
+	e.ad.svcState = state.CustomerAIEligibleBypass48002
+	if code, v := e.send(tok, e.cust.UID, "text", "x"); code != 403 || errcode(v) != ErrCodeDisabled {
+		t.Fatalf("local HUMAN must still block send: %d %v", code, v)
+	}
+	if len(e.ad.sent()) != 0 {
+		t.Fatal("sent while locally human")
+	}
+}

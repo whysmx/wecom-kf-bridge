@@ -179,8 +179,11 @@ func TestTreat48002AsAIEligible(t *testing.T) {
 
 	a.treat48002AsAI = true
 	st, err := a.ServiceState(ctx, b, cust)
-	if err != nil || st != state.CustomerAIEligible {
-		t.Fatalf("switch on: %s %v", st, err)
+	if err != nil || st != state.CustomerAIEligibleBypass48002 {
+		t.Fatalf("switch on: want bypass sentinel, got %s %v", st, err)
+	}
+	if st == state.CustomerAIEligible {
+		t.Fatal("bypass must be distinguishable from real AI_ELIGIBLE")
 	}
 	ev, f := l.last()
 	if ev != "WARNING_service_state_48002_bypassed" || f["errcode"] != 48002 {
@@ -193,12 +196,23 @@ func TestTreat48002AsAIEligible(t *testing.T) {
 		t.Fatalf("leak: %s", s)
 	}
 
-	// other errcodes still fail with the switch on
+	// other errcodes and transport errors still fail with the switch on
 	body = `{"errcode":95014,"errmsg":"no permission"}`
 	if _, err := a.ServiceState(ctx, b, cust); err == nil {
 		t.Fatal("95014 must still block")
 	}
 	if ev, _ := l.last(); ev != "service_state_upstream_errcode" {
+		t.Fatal(ev)
+	}
+	body = `{"errcode":48001,"errmsg":"api not found"}`
+	if _, err := a.ServiceState(ctx, b, cust); err == nil {
+		t.Fatal("48001 must still block")
+	}
+	body = `not json`
+	if _, err := a.ServiceState(ctx, b, cust); err == nil {
+		t.Fatal("network/parse error must still block")
+	}
+	if ev, _ := l.last(); ev != "service_state_call_error" {
 		t.Fatal(ev)
 	}
 }

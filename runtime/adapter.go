@@ -161,9 +161,11 @@ func (a *WeComAdapter) ServiceState(ctx context.Context, b bridge.Binding, c bri
 			if ae.Code == 48002 {
 				f["hint"] = "api forbidden: the calling app must be in 微信客服「可调用接口的应用」, the kf account must be set to 通过API管理, and its servicers must be in the app's visible range"
 				if a.treat48002AsAI {
-					f["effect"] = "treat_48002_as_ai_eligible: proceeding as AI_ELIGIBLE (joint-debug only; never production)"
+					// Distinguishable from a real official AI mapping: send
+					// may proceed, auto-recover must not clear a fence.
+					f["effect"] = "treat_48002_as_ai_eligible: send may proceed as AI_ELIGIBLE_48002_BYPASS; auto-recover will not clear fences (joint-debug only; never production)"
 					a.log("WARNING_service_state_48002_bypassed", f)
-					return state.CustomerAIEligible, nil
+					return state.CustomerAIEligibleBypass48002, nil
 				}
 			}
 			a.log("service_state_upstream_errcode", f)

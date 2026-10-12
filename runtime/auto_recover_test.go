@@ -132,3 +132,51 @@ func (r *recLogger) has(ev string) bool {
 	}
 	return false
 }
+
+// P1: treat_48002_as_ai_eligible must not let inbound auto-recover clear an
+// automatic fence. OfficialState returning the 48002 bypass sentinel is not
+// a real AI observation.
+func TestAutoRecoverIgnores48002Bypass(t *testing.T) {
+	st, c := unitStore(t)
+	ctx := context.Background()
+	_ = st.SetCustomerAuthorized(ctx, c.ID, true)
+	srv, _ := bridge.NewServer(bridge.Config{Store: st, Bindings: []bridge.Binding{{ID: "b1", CorpID: "v", CallbackToken: "t", CallbackAESKey: key43(4), Enabled: true}}})
+	var posts int32
+	cc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { atomic.AddInt32(&posts, 1) }))
+	defer cc.Close()
+	d := &DeliveryWorker{Store: st, Server: srv, CallbackURL: map[string]string{"b1": cc.URL}, AgentID: map[string]string{}, HTTP: cc.Client(), MaxAttempts: 3, MaxConc: 1, Logger: nopRuntimeLogger{},
+		OfficialState: func(context.Context, string, state.Customer) (string, error) {
+			return state.CustomerAIEligibleBypass48002, nil
+		}}
+	_ = st.SetHandoverStatus(ctx, c.ID, state.CustomerHuman, "service_state_precheck")
+	before, _ := st.Customer(ctx, c.ID)
+	if before.FenceSource != state.FenceAuto {
+		t.Fatal(before.FenceSource)
+	}
+	if _, err := st.CommitSyncPage(ctx, "sc", "in1", false, []state.InboxMessage{{BindingID: "b1", ExternalMsgID: "in1", CustomerID: c.ID, Generation: before.Generation, Type: "text", PayloadRef: "q", CreateTime: time.Now()}}); err != nil {
+		t.Fatal(err)
+	}
+	d.DeliverOnce(ctx)
+	after, _ := st.Customer(ctx, c.ID)
+	m, _ := st.InboxByExternalID(ctx, "sc", "in1")
+	if after.State != state.CustomerHuman || after.FenceSource != state.FenceAuto || after.Generation != before.Generation {
+		t.Fatalf("48002 bypass cleared fence: %+v", after)
+	}
+	if m.State != state.InboxHeld || atomic.LoadInt32(&posts) != 0 {
+		t.Fatalf("delivered to AI under bypass: state=%s posts=%d", m.State, posts)
+	}
+
+	// WAITING_HUMAN auto fence likewise
+	_, _ = st.RecoverCustomer(ctx, c.ID, "admin_recover") // need AI first to set waiting via SetHandover
+	_ = st.SetHandoverStatus(ctx, c.ID, state.CustomerWaitingHuman, "service_state_precheck")
+	cu, _ := st.Customer(ctx, c.ID)
+	if _, err := st.CommitSyncPage(ctx, "sc", "in2", false, []state.InboxMessage{{BindingID: "b1", ExternalMsgID: "in2", CustomerID: c.ID, Generation: cu.Generation, Type: "text", PayloadRef: "q", CreateTime: time.Now()}}); err != nil {
+		t.Fatal(err)
+	}
+	d.DeliverOnce(ctx)
+	cu2, _ := st.Customer(ctx, c.ID)
+	m2, _ := st.InboxByExternalID(ctx, "sc", "in2")
+	if cu2.State != state.CustomerWaitingHuman || cu2.FenceSource != state.FenceAuto || m2.State != state.InboxHeld || atomic.LoadInt32(&posts) != 0 {
+		t.Fatalf("WAITING fence cleared: %+v msg=%s posts=%d", cu2, m2.State, posts)
+	}
+}
