@@ -91,13 +91,16 @@ func (g *Gateway) wire(ctx context.Context, cfg Config, logger Logger) error {
 	} else if in+out > 0 {
 		logger.Log("recovered_in_flight", map[string]any{"inbox": in, "outbox": out})
 	}
-	adapter := &WeComAdapter{clients: map[string]*wecom.Client{}, tokens: map[string]*tokenCache{}, routes: map[string]bindingRoute{}, states: map[int]string{}, store: st, now: time.Now}
+	adapter := &WeComAdapter{clients: map[string]*wecom.Client{}, tokens: map[string]*tokenCache{}, routes: map[string]bindingRoute{}, states: map[int]string{}, store: st, now: time.Now, treat48002AsAI: cfg.WeCom.Treat48002AsAIEligible}
 	adapter.logger = logger
 	for k, v := range cfg.WeCom.ServiceStateMap {
 		n, _ := strconv.Atoi(k)
 		adapter.states[n] = v
 	}
 	warnServiceStateMap(cfg.WeCom.ServiceStateMap, logger)
+	if cfg.WeCom.Treat48002AsAIEligible {
+		logger.Log("WARNING_treat_48002_as_ai_eligible", map[string]any{"effect": "kf/service_state/get errcode 48002 will be treated as AI_ELIGIBLE for send; joint-debug only, never enable in production"})
+	}
 	g.Router = wecom.NewRouter()
 	g.Sync = &SyncWorker{Store: st, Scopes: map[string]scopeInfo{}, Origins: wecom.OriginPolicy{CustomerOrigins: cfg.WeCom.CustomerOrigins}, Interval: time.Duration(cfg.Workers.SyncIntervalSeconds) * time.Second, MaxPages: cfg.Workers.MaxSyncPages, MaxConc: cfg.Workers.MaxConcurrency, Logger: logger}
 	g.adapter, g.vbs, g.scopes = adapter, map[string]bridge.Binding{}, map[string]string{}
@@ -184,6 +187,9 @@ func (g *Gateway) wire(ctx context.Context, cfg Config, logger Logger) error {
 	}
 	g.Server = srv
 	g.Delivery.Server = srv
+	// OfficialState uses ServiceState as-is. A 48002 bypass returns
+	// AI_ELIGIBLE_48002_BYPASS (not AI_ELIGIBLE), so auto-recover will not
+	// clear fences when the joint-debug switch is on.
 	g.Delivery.OfficialState = func(ctx context.Context, bindingID string, c state.Customer) (string, error) {
 		return adapter.ServiceState(ctx, bridge.Binding{ID: bindingID}, bridge.Customer{ExternalUserID: c.ExternalUserID})
 	}

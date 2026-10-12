@@ -513,7 +513,7 @@ func (s *Server) send(ctx context.Context, b Binding, sc state.Customer, agent, 
 		_, _ = s.cfg.Store.BlockOutbox(context.WithoutCancel(ctx), o.ID, state.BlockStateQuery)
 		return errAPI{ErrCodeUnavailable, "service state unavailable", http.StatusServiceUnavailable}
 	}
-	if st != state.CustomerAIEligible {
+	if st != state.CustomerAIEligible && st != state.CustomerAIEligibleBypass48002 {
 		// An official non-AI state is never overridden. 已结束/未开始 (CLOSED)
 		// only blocks this send: the next customer message reopens the
 		// session officially (→ 0), so no persistent fence is written.

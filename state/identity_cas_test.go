@@ -124,19 +124,29 @@ func TestMarkSendingRacesTakeover(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		s, c, o := newSendable(t)
 		var wg sync.WaitGroup
-		var markErr error
+		var markErr, takeErr error
 		wg.Add(2)
 		go func() { defer wg.Done(); _, markErr = s.MarkOutboxSending(ctx, o.ID) }()
-		go func() { defer wg.Done(); s.BeginHandover(ctx, c.ID, "agent") }()
+		go func() { defer wg.Done(); _, takeErr = s.BeginHandover(ctx, c.ID, "agent") }()
 		wg.Wait()
+		// Under -race / loaded CI, BeginHandover can lose to SQLITE_BUSY (517)
+		// while MarkOutboxSending commits. Retry the takeover so the fence
+		// always lands before we assert on the subsequent chunk.
+		for n := 0; takeErr != nil && n < 20; n++ {
+			_, takeErr = s.BeginHandover(ctx, c.ID, "agent")
+		}
+		if takeErr != nil {
+			t.Fatalf("takeover: %v", takeErr)
+		}
 		got, _ := s.Outbox(ctx, o.ID)
 		if markErr == nil && got.State != OutboxSending || markErr != nil && got.State == OutboxSending {
 			t.Fatalf("result %v but state %s", markErr, got.State)
 		}
-		// a SENDING row is fenced for every further chunk
+		// Takeover always lands; a SENDING row is then fenced for every further chunk.
 		if markErr == nil {
 			if err := s.SendGuarded(ctx, o.ID, func() error { return nil }); !errors.Is(err, ErrHeld) {
-				t.Fatalf("chunk after takeover: %v", err)
+				cu, _ := s.Customer(ctx, c.ID)
+				t.Fatalf("chunk after takeover: %v (customer %+v)", err, cu)
 			}
 		}
 	}

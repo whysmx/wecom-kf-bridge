@@ -47,6 +47,12 @@ const (
 	CustomerHuman        = "HUMAN"
 	CustomerClosed       = "CLOSED"
 	CustomerUnknown      = "UNKNOWN"
+	// CustomerAIEligibleBypass48002 is not a persisted customer state. The
+	// adapter returns it when treat_48002_as_ai_eligible is on and WeCom
+	// returns errcode 48002: the send path treats it like AI_ELIGIBLE, but
+	// OfficialState / auto-recover must not (it is not a real official AI
+	// observation and must not clear an automatic fence).
+	CustomerAIEligibleBypass48002 = "AI_ELIGIBLE_48002_BYPASS"
 
 	InboxReceived        = "RECEIVED"
 	InboxClassified      = "CLASSIFIED"
