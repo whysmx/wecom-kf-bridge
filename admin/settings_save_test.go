@@ -124,3 +124,24 @@ func TestApplyEditableSettingsSkipsBadKeys(t *testing.T) {
 		t.Fatalf("bad key should be skipped: %#v", e.c.cfg.ServiceStateMap)
 	}
 }
+
+func TestSettingsSaveRejectsEmptyServiceStateMap(t *testing.T) {
+	e := newEnv(t)
+	cl := e.login()
+	cl.stepUp()
+	for _, raw := range []string{"", "{}", "  {}  "} {
+		w := cl.post("/admin/settings/save", url.Values{
+			"service_state_map": {raw},
+			"public_base_url":   {"https://bridge.example.com"},
+		})
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "service_state_map") {
+			t.Fatalf("raw %q -> %d %q", raw, w.Code, w.Body.String())
+		}
+	}
+	e.rt.mu.Lock()
+	n := len(e.rt.saved)
+	e.rt.mu.Unlock()
+	if n != 0 {
+		t.Fatal("must not persist empty/blank service_state_map")
+	}
+}

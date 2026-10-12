@@ -37,7 +37,7 @@
 | 字段 | 说明 |
 |---|---|
 | `wecom.treat_48002_as_ai_eligible` | 联调旁路；保存强制审计并在 UI 显示危险提示；默认 `false`；**严禁生产开启** |
-| `wecom.service_state_map` | 官方 state → 内部状态映射（表单为 JSON 对象） |
+| `wecom.service_state_map` | 官方 state → 内部状态映射（表单为非空 JSON 对象；空串/`{}` 拒绝，避免误清空） |
 | `server.public_base_url` | 导出给 cc-connect 的 `api_base_url` |
 
 持久化：安全写回 `WECOM_KF_BRIDGE_CONFIG` 指向的 `config.json`，并**热加载**到运行中的适配器/控制台（无需重启）。Secret/Token/AES 仍只显示环境变量名，不可在此页改明文（轮换走绑定页）。

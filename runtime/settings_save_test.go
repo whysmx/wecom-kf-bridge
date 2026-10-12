@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,10 +18,16 @@ func TestWriteConfigFileAndValidateEditable(t *testing.T) {
 	if err := ValidateEditableSettings(true, map[string]string{"x": "AI_ELIGIBLE"}, ""); err == nil {
 		t.Fatal("expected invalid map key")
 	}
-	if err := ValidateEditableSettings(false, nil, "ftp://x"); err == nil {
+	if err := ValidateEditableSettings(false, nil, ""); err == nil {
+		t.Fatal("expected empty map reject")
+	}
+	if err := ValidateEditableSettings(false, map[string]string{}, ""); err == nil {
+		t.Fatal("expected empty object reject")
+	}
+	if err := ValidateEditableSettings(false, map[string]string{"1": "AI_ELIGIBLE"}, "ftp://x"); err == nil {
 		t.Fatal("expected bad url")
 	}
-	if err := ValidateEditableSettings(false, nil, "https://x/cgi-bin"); err == nil {
+	if err := ValidateEditableSettings(false, map[string]string{"1": "AI_ELIGIBLE"}, "https://x/cgi-bin"); err == nil {
 		t.Fatal("expected cgi-bin reject")
 	}
 
@@ -183,8 +190,11 @@ func TestWriteConfigFileIOErrors(t *testing.T) {
 	if err := os.Mkdir(destDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(destDir, "keep"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := WriteConfigFile(destDir, Config{}); err == nil {
-		t.Fatal("expected rename failure when destination is a directory")
+		t.Fatal("expected failure when destination is a non-empty directory")
 	}
 }
 
@@ -200,3 +210,80 @@ func TestApplyEditableSettingsNilAdapterAndConsole(t *testing.T) {
 		t.Fatal(g.liveCfg.Server.PublicBaseURL)
 	}
 }
+
+func TestWriteConfigFileReplacesExisting(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	raw, err := os.ReadFile(filepath.Join("..", "config.example.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded.Server.PublicBaseURL = "https://replaced.example"
+	if err := WriteConfigFile(path, loaded); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Server.PublicBaseURL != "https://replaced.example" {
+		t.Fatalf("got %q", got.Server.PublicBaseURL)
+	}
+	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+		t.Fatal("tmp should be gone after successful replace")
+	}
+}
+
+// TestWriteConfigFileWindowsStyleOverwrite stubs rename to fail when the
+// destination already exists (Windows behaviour), then expects Remove+Rename.
+func TestWriteConfigFileWindowsStyleOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	raw, err := os.ReadFile(filepath.Join("..", "config.example.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded.Server.PublicBaseURL = "https://win-replace.example"
+
+	orig := renameFile
+	t.Cleanup(func() { renameFile = orig })
+	calls := 0
+	renameFile = func(oldpath, newpath string) error {
+		calls++
+		if _, err := os.Stat(newpath); err == nil {
+			// Simulate Windows: cannot rename over existing destination.
+			return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: errWindowsExist}
+		}
+		return orig(oldpath, newpath)
+	}
+
+	if err := WriteConfigFile(path, loaded); err != nil {
+		t.Fatal(err)
+	}
+	if calls < 2 {
+		t.Fatalf("expected fallback rename path, calls=%d", calls)
+	}
+	got, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Server.PublicBaseURL != "https://win-replace.example" {
+		t.Fatalf("got %q", got.Server.PublicBaseURL)
+	}
+}
+
+var errWindowsExist = errors.New("The file exists")

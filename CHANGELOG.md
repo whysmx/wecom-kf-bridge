@@ -4,6 +4,10 @@
 
 ## [未发布]
 
+### 修复
+
+- 系统设置写回 `config.json`：Windows 上目标已存在时 `os.Rename` 会失败；改为 Remove+Rename 回退（`replaceFile`），并拒绝空/`{}` 的 `service_state_map` 以免误清空；热加载只调用一次 `ApplyEditableSettings`（#25 / #26）。
+
 ### 新增
 
 - 管理后台「系统设置」可在线保存：`wecom.treat_48002_as_ai_eligible`（二次认证 + 危险提示 + 强制审计）、`wecom.service_state_map`、`server.public_base_url`；写回 `config.json` 并热加载，无需重启；密钥类字段仍只显示环境变量名（#25）。

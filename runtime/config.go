@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/url"
 	"os"
@@ -323,9 +324,13 @@ func secretEnv(name string) (string, error) {
 func ShutdownGrace(c Config) time.Duration { return c.grace() }
 
 // ValidateEditableSettings checks the admin-editable subset (#25).
+// An empty service_state_map is rejected so a blank save cannot wipe the live map.
 func ValidateEditableSettings(treat bool, serviceStateMap map[string]string, publicBaseURL string) error {
 	_ = treat // bool is always valid; danger is operational, not schema
 	var errs []string
+	if len(serviceStateMap) == 0 {
+		errs = append(errs, "wecom.service_state_map must be a non-empty object (empty {} refused to avoid accidental clear)")
+	}
 	if publicBaseURL != "" {
 		u, err := url.Parse(publicBaseURL)
 		if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || u.RawQuery != "" || u.Fragment != "" || strings.Contains(u.Path, "/cgi-bin") {
@@ -343,7 +348,29 @@ func ValidateEditableSettings(treat bool, serviceStateMap map[string]string, pub
 	return nil
 }
 
+// renameFile is os.Rename; tests may stub it to simulate Windows
+// "cannot overwrite destination" behaviour on any OS.
+var renameFile = os.Rename
+
+// replaceFile moves tmp onto dst. POSIX Rename replaces atomically; on
+// Windows Rename fails when dst exists, so we Remove(dst) then Rename.
+func replaceFile(tmp, dst string) error {
+	if err := renameFile(tmp, dst); err == nil {
+		return nil
+	}
+	if remErr := os.Remove(dst); remErr != nil && !errors.Is(remErr, fs.ErrNotExist) {
+		_ = os.Remove(tmp)
+		return remErr
+	}
+	if err := renameFile(tmp, dst); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
 // WriteConfigFile atomically replaces path with pretty-printed cfg (#25).
+// Uses replaceFile so saving settings works on Windows company hosts.
 func WriteConfigFile(path string, cfg Config) error {
 	if strings.TrimSpace(path) == "" {
 		return errors.New("config path empty")
@@ -358,9 +385,5 @@ func WriteConfigFile(path string, cfg Config) error {
 	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	return nil
+	return replaceFile(tmp, path)
 }

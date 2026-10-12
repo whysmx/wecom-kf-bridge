@@ -660,18 +660,23 @@ func (c *Console) settingsSave(r *http.Request, _ *session) result {
 	rawMap := strings.TrimSpace(r.PostFormValue("service_state_map"))
 	pub := strings.TrimSpace(r.PostFormValue("public_base_url"))
 	treat := r.PostFormValue("treat_48002_as_ai_eligible") == "1" || strings.EqualFold(r.PostFormValue("treat_48002_as_ai_eligible"), "true")
+	// Blank / {} must not wipe a live map: require an explicit non-empty object.
+	if rawMap == "" {
+		return bad("service_state_map 不能为空（不会清空现有映射；请提交非空 JSON 对象）")
+	}
 	m := map[string]string{}
-	if rawMap != "" {
-		if err := json.Unmarshal([]byte(rawMap), &m); err != nil {
-			return bad("service_state_map 须为 JSON 对象（如 {\"1\":\"AI_ELIGIBLE\"}）")
-		}
+	if err := json.Unmarshal([]byte(rawMap), &m); err != nil {
+		return bad("service_state_map 须为 JSON 对象（如 {\"1\":\"AI_ELIGIBLE\"}）")
+	}
+	if len(m) == 0 {
+		return bad("service_state_map 不能为空对象 {}（避免误清空映射）")
 	}
 	s := EditableSettings{Treat48002AsAIEligible: treat, ServiceStateMap: m, PublicBaseURL: pub}
 	if err := c.cfg.Runtime.SaveSettings(r.Context(), s); err != nil {
 		c.audit(r, "settings", "runtime", "save", "failed", err.Error(), 0)
 		return result{status: http.StatusBadRequest, flash: "保存失败：" + err.Error()}
 	}
-	c.ApplyEditableSettings(s)
+	// Hot-apply (incl. console) happens once inside Runtime.SaveSettings.
 	summary := fmt.Sprintf("treat_48002=%v public_base_url=%q map_keys=%d", treat, pub, len(m))
 	if treat {
 		summary += "; WARNING joint-debug only never production"
