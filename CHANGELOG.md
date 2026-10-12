@@ -7,6 +7,7 @@
 ### 修复
 
 - 配置 `bindings[].disabled: true` 对**已存在**的 SQLite 绑定生效：启动 bootstrap 会把 `active`/project/callback 与配置对齐并升 revision；`disabled→inactive` 记 `binding_config_disabled`。配置中的绑定以 JSON 为准（控制台对该绑定的停用/改绑在下次启动会被配置覆盖）；仅存在于库中的控制台绑定不受影响（#18）。
+- SQLite WAL 下 `BEGIN DEFERRED` 读后写不再返回 `SQLITE_BUSY_SNAPSHOT`（517）：`OpenWithOptions` DSN 增加 `_txlock=immediate`，写锁冲突由 `busy_timeout` 等待；连接钩子（foreign_keys / busy_timeout）不变（#11）。
 
 ### 新增
 

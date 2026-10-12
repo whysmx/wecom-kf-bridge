@@ -129,10 +129,10 @@ func TestMarkSendingRacesTakeover(t *testing.T) {
 		go func() { defer wg.Done(); _, markErr = s.MarkOutboxSending(ctx, o.ID) }()
 		go func() { defer wg.Done(); _, takeErr = s.BeginHandover(ctx, c.ID, "agent") }()
 		wg.Wait()
-		// Under -race / loaded CI, BeginHandover can lose to SQLITE_BUSY (517)
-		// while MarkOutboxSending commits. Retry the takeover so the fence
-		// always lands before we assert on the subsequent chunk.
-		for n := 0; takeErr != nil && n < 20; n++ {
+		// Takeover may lose the race to MarkOutboxSending on state (ErrHeld
+		// paths are fine); with _txlock=immediate (#11) it should not see 517.
+		// A short retry still covers ordinary lock waits under -race.
+		for n := 0; takeErr != nil && n < 5; n++ {
 			_, takeErr = s.BeginHandover(ctx, c.ID, "agent")
 		}
 		if takeErr != nil {
