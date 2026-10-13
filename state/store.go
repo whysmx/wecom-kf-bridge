@@ -885,10 +885,10 @@ func (s *Store) ObserveOfficialAI(ctx context.Context, customerID string) (Custo
 	return nc, true, nil
 }
 
-
 // ClearAutoFenceInPlace drops an automatic fence without rotating generation.
-// Used after a successful force-trans back to AI on the send path so the
-// current UID may continue. Manual fences are never cleared here.
+// Used after a successful force-trans back to AI on the send or inbound
+// delivery path so the current UID may continue. Manual fences are never
+// cleared here.
 func (s *Store) ClearAutoFenceInPlace(ctx context.Context, customerID, reason string) (Customer, error) {
 	defer s.lock("customer:" + customerID)()
 	tx, err := s.db.BeginTx(ctx, nil)

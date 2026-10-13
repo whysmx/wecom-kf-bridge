@@ -200,6 +200,43 @@ func (g *Gateway) wire(ctx context.Context, cfg Config, logger Logger) error {
 	g.Delivery.OfficialState = func(ctx context.Context, bindingID string, c state.Customer) (string, error) {
 		return adapter.ServiceState(ctx, bridge.Binding{ID: bindingID}, bridge.Customer{ExternalUserID: c.ExternalUserID})
 	}
+	// Inbound force-pullback mirrors protocol.forceTransToAI (trans→1 + re-read).
+	g.Delivery.ForceTransToAI = func(ctx context.Context, bindingID string, c state.Customer, fromMapped string) error {
+		b := bridge.Binding{ID: bindingID}
+		if vb, ok := g.vbs[bindingID]; ok {
+			b = vb
+		}
+		cust := bridge.Customer{ID: c.ID, BindingID: c.BindingID, ExternalUserID: c.ExternalUserID, UserID: c.UID}
+		logger.Log("handover_force_trans_ai", map[string]any{
+			"binding_id": bindingID, "customer_id": c.ID, "from_mapped": fromMapped,
+			"external_userid_prefix": bridge.TruncateID(c.ExternalUserID, 8), "target": bridge.OfficialStateAI,
+			"path": "inbound",
+		})
+		if _, err := adapter.TransServiceState(ctx, b, cust, bridge.OfficialStateAI); err != nil {
+			logger.Log("handover_force_trans_ai_failed", map[string]any{
+				"binding_id": bindingID, "customer_id": c.ID, "from_mapped": fromMapped,
+				"external_userid_prefix": bridge.TruncateID(c.ExternalUserID, 8), "error": err.Error(), "path": "inbound",
+			})
+			return err
+		}
+		got, err := adapter.ServiceState(ctx, b, cust)
+		if err != nil {
+			logger.Log("handover_force_trans_ai_reread_failed", map[string]any{
+				"binding_id": bindingID, "customer_id": c.ID, "error": err.Error(), "path": "inbound",
+			})
+			return err
+		}
+		if got != state.CustomerAIEligible && got != state.CustomerAIEligibleBypass48002 {
+			logger.Log("handover_force_trans_ai_not_confirmed", map[string]any{
+				"binding_id": bindingID, "customer_id": c.ID, "got": got, "from_mapped": fromMapped, "path": "inbound",
+			})
+			return fmt.Errorf("force trans not confirmed as AI: %s", got)
+		}
+		logger.Log("handover_force_trans_ai_ok", map[string]any{
+			"binding_id": bindingID, "customer_id": c.ID, "from_mapped": fromMapped, "path": "inbound",
+		})
+		return nil
+	}
 	hcfg := HandoverConfig{Phrase: cfg.WeCom.HandoverPhrase, Welcome: cfg.WeCom.HandoverWelcome}
 	g.Delivery.HandoverPhrase = hcfg.phrase()
 	g.Delivery.OnHandoverPhrase = func(ctx context.Context, c state.Customer, m state.InboxMessage) error {

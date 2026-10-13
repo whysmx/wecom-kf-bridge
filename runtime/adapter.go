@@ -185,7 +185,6 @@ func (a *WeComAdapter) ServiceState(ctx context.Context, b bridge.Binding, c bri
 	return state.CustomerUnknown, nil
 }
 
-
 // TransServiceState calls kf/service_state/trans. officialState is the WeCom
 // integer (1 AI / 2 waiting / 3 human / 4 closed). Returns msg_code when
 // present (for send_msg_on_event). Never deletes servicers.
