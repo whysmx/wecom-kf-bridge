@@ -494,10 +494,17 @@ func (c *Console) transfer(r *http.Request, cu state.Customer, internal string, 
 		}
 		return "", false, nil
 	}
-	// Welcome phrase only on intentional handoff (trans→waiting), never on recover→AI.
-	if msgCode != "" && internal == state.CustomerWaitingHuman {
-		if w := strings.TrimSpace(c.cfg.HandoverWelcome); w != "" {
-			_ = c.cfg.KF.SendMsgOnEvent(r.Context(), msgCode, w)
+	// Event phrases: queue tip on intentional handoff (trans→2); end tip on recover (trans→4).
+	if msgCode != "" {
+		switch internal {
+		case state.CustomerWaitingHuman:
+			if w := strings.TrimSpace(c.cfg.HandoverWelcome); w != "" {
+				_ = c.cfg.KF.SendMsgOnEvent(r.Context(), msgCode, w)
+			}
+		case state.CustomerClosed:
+			if w := strings.TrimSpace(c.cfg.HandoverEndScript); w != "" {
+				_ = c.cfg.KF.SendMsgOnEvent(r.Context(), msgCode, w)
+			}
 		}
 	}
 	got, err := c.cfg.KF.ServiceState(r.Context(), b.OpenKfID, cu.ExternalUserID)
@@ -600,8 +607,10 @@ func retrySQLiteBusy(ctx context.Context, attempts int, fn func() error) error {
 	return err
 }
 
-// customerRecover returns the session to the AI assistant officially, reads
-// it back, and only then creates the new generation locally.
+// customerRecover ends the official human session (trans→4) then restores
+// local AI with a new generation. WeCom forbids 2→1 / 3→1 (errcode 95016);
+// 4→1 is also illegal. After end→4 the customer’s next message becomes
+// official 0; inbound/send may then trans→1. This handler never trans→1.
 func (c *Console) customerRecover(r *http.Request, _ *session) result {
 	cu, res := c.customer(r)
 	if res != nil {
@@ -610,24 +619,55 @@ func (c *Console) customerRecover(r *http.Request, _ *session) result {
 	if cu.State != state.CustomerHuman && cu.State != state.CustomerWaitingHuman {
 		return result{status: http.StatusConflict, flash: "恢复失败：需先处于已确认的人工状态"}
 	}
-	official, certain, rejected := c.transfer(r, cu, state.CustomerAIEligible, state.CustomerAIEligible)
-	if rejected != nil {
-		c.audit(r, "customer", cu.ID, "recover", "rejected", rejected.Error(), cu.Revision)
-		return result{location: "/admin/customers?q=" + cu.ID, flash: "恢复失败（官方未变更）：" + rejected.Error()}
+	b, err := c.cfg.Store.Binding(r.Context(), cu.BindingID)
+	if err != nil {
+		c.audit(r, "customer", cu.ID, "recover", "rejected", "binding missing", cu.Revision)
+		return result{location: "/admin/customers?q=" + cu.ID, flash: "恢复失败：绑定不存在"}
 	}
-	if !certain {
+	got, err := c.cfg.KF.ServiceState(r.Context(), b.OpenKfID, cu.ExternalUserID)
+	if err != nil {
 		_ = c.cfg.Store.SetCustomerState(r.Context(), cu.ID, state.CustomerUnknown)
 		_ = c.cfg.Store.SetOfficialStatus(r.Context(), cu.ID, state.CustomerUnknown)
-		c.audit(r, "customer", cu.ID, "recover", "unknown", "", cu.Revision)
+		c.audit(r, "customer", cu.ID, "recover", "unknown", "service_state get failed: "+err.Error(), cu.Revision)
 		return result{location: "/admin/customers?q=" + cu.ID, flash: "官方恢复结果未知（UNKNOWN）：AI 保持暂停，请在企业微信中核实"}
+	}
+	mapped := c.mapped(got)
+	official := mapped
+	switch mapped {
+	case state.CustomerAIEligible:
+		// Official already AI (0/1): no trans; local recover only.
+	case state.CustomerClosed:
+		// Already ended: skip trans; local recover only.
+	default:
+		// WAITING/HUMAN/UNKNOWN while local is human: end→4 (never →1).
+		// Fallback 2→3→4 needs servicer_userid; admin KF has none configured
+		// → on end→4 rejection report clearly (no fake success).
+		var certain bool
+		var rejected error
+		official, certain, rejected = c.transfer(r, cu, state.CustomerClosed, state.CustomerClosed)
+		if rejected != nil {
+			detail := rejected.Error() + "；无可用接待人配置，无法兜底 2→3→4"
+			c.audit(r, "customer", cu.ID, "recover", "rejected", detail, cu.Revision)
+			return result{location: "/admin/customers?q=" + cu.ID, flash: "恢复失败（官方结束被拒）：" + detail}
+		}
+		if !certain {
+			_ = c.cfg.Store.SetCustomerState(r.Context(), cu.ID, state.CustomerUnknown)
+			_ = c.cfg.Store.SetOfficialStatus(r.Context(), cu.ID, state.CustomerUnknown)
+			c.audit(r, "customer", cu.ID, "recover", "unknown", "end→4 uncertain", cu.Revision)
+			return result{location: "/admin/customers?q=" + cu.ID, flash: "官方恢复结果未知（UNKNOWN）：AI 保持暂停，请在企业微信中核实"}
+		}
 	}
 	nc, err := c.cfg.Store.RecoverCustomer(r.Context(), cu.ID, "admin_recover")
 	if err != nil {
 		return result{status: http.StatusConflict, flash: "恢复失败：" + err.Error()}
 	}
 	_ = c.cfg.Store.SetOfficialStatus(r.Context(), cu.ID, official)
-	c.audit(r, "customer", cu.ID, "recover", "ok", fmt.Sprintf("generation %d -> %d", cu.Generation, nc.Generation), cu.Revision)
-	return result{location: "/admin/customers?q=" + nc.ID, flash: "已恢复 AI（官方已确认）：新 UID 与新客户端上下文；在途任务不承诺可撤回"}
+	c.audit(r, "customer", cu.ID, "recover", "ok", fmt.Sprintf("official=%s generation %d -> %d", official, cu.Generation, nc.Generation), cu.Revision)
+	flash := "官方已结束(4)，本地已恢复 AI；客户再来信后可自动回复。新 UID 与新客户端上下文；在途任务不承诺可撤回"
+	if official == state.CustomerAIEligible {
+		flash = "本地已恢复 AI（官方已是 AI）：新 UID 与新客户端上下文；在途任务不承诺可撤回"
+	}
+	return result{location: "/admin/customers?q=" + nc.ID, flash: flash}
 }
 
 // ---- 诊断 / 设置 ----

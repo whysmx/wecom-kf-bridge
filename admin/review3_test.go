@@ -85,8 +85,14 @@ func TestHandoverRequiresOfficialConfirmation(t *testing.T) {
 	e.kf.transErr = nil
 	cl.post(path+"/recover", rev(t, e))
 	c = mustCustomer(t, e)
-	if c.Generation != e.cust.Generation+1 || c.State != state.CustomerAIEligible || c.OfficialStatus != state.CustomerAIEligible {
+	if c.Generation != e.cust.Generation+1 || c.State != state.CustomerAIEligible || c.OfficialStatus != state.CustomerClosed {
 		t.Fatal("confirmed recover", c)
+	}
+	if e.kf.count("trans:ext-secret-id:4") == 0 {
+		t.Fatal("confirmed recover must trans→4", e.kf.calls)
+	}
+	if e.kf.count("trans:ext-secret-id:1") != 0 {
+		t.Fatal("recover must not trans→1", e.kf.calls)
 	}
 }
 

@@ -86,7 +86,7 @@ func adminGatewayConfig(t *testing.T, ccPort int) Config {
 	cfg := gatewayConfig(t)
 	hash, _ := bcrypt.GenerateFromPassword([]byte(adminPassword), bcrypt.MinCost)
 	t.Setenv("G_ADMIN_HASH", string(hash))
-	cfg.WeCom.ServiceStateMap = map[string]string{"1": "AI_ELIGIBLE", "2": "WAITING_HUMAN", "3": "HUMAN"}
+	cfg.WeCom.ServiceStateMap = map[string]string{"1": "AI_ELIGIBLE", "2": "WAITING_HUMAN", "3": "HUMAN", "4": "CLOSED"}
 	cfg.Admin = AdminConfig{Listen: "127.0.0.1:0", Origin: adminOrigin, PasswordHashEnv: "G_ADMIN_HASH", CompanyName: "测试企业"}
 	cfg.Security.CallbackTargets = append(cfg.Security.CallbackTargets, CallbackTarget{Host: "127.0.0.1", Port: ccPort, AllowedCIDRs: []string{"127.0.0.0/8"}})
 	return cfg
@@ -274,8 +274,8 @@ func TestAdminConsoleEndToEnd(t *testing.T) {
 	}
 	cu, _ := g.Store.Customer(context.Background(), cust.ID)
 	c.post("/admin/customers/"+cust.ID+"/recover", url.Values{"revision": {strconv.FormatInt(cu.Revision, 10)}})
-	if cu2, _ := g.Store.Customer(context.Background(), cust.ID); cu2.State != "AI_ELIGIBLE" || cu2.Generation != cu.Generation+1 {
-		t.Fatal("recover via official API", cu2.State)
+	if cu2, _ := g.Store.Customer(context.Background(), cust.ID); cu2.State != "AI_ELIGIBLE" || cu2.Generation != cu.Generation+1 || cu2.OfficialStatus != "CLOSED" {
+		t.Fatal("recover via official API", cu2.State, cu2.OfficialStatus, cu2.Generation)
 	}
 	// #32: deleting the kf account disables b2 and revokes its tokens
 	tw := httptest.NewRecorder()

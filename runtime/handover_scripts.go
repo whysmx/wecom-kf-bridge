@@ -3,8 +3,8 @@ package runtime
 import "strings"
 
 // Default transfer / event phrases for send_msg_on_event (WeCom: queue tip,
-// human-join tip, end tip). Only the queue phrase is wired this PR; end is
-// configured for phase-3 recover wiring and must not be sent here.
+// human-join tip, end tip). Queue is wired on trans→2; end is sent on admin
+// recover trans→4 when HandoverEndScript is configured.
 const (
 	defaultHandoverQueueScript = "正在为您转接人工客服，请稍候…"
 	defaultHandoverHumanScript = "人工客服已接入，请描述您的问题。"
@@ -19,7 +19,7 @@ type HandoverScripts struct {
 	Queue string `json:"queue"`
 	// Human is reserved for trans→3 / pool-accept tip (配置可存；本 PR 转人工路径不发).
 	Human string `json:"human"`
-	// End is reserved for session-end / 回切话术 (阶段3；本 PR 仅可配不发送).
+	// End is sent on admin recover after confirmed trans→4 (send_msg_on_event).
 	End string `json:"end"`
 }
 

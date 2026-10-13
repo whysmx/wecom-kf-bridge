@@ -25,14 +25,14 @@ func TestSendOfficialClosedBlocksOnlyThisSend(t *testing.T) {
 		t.Fatalf("send after reopen: %d %v", code, v)
 	}
 	e.ad.svcState = state.CustomerHuman
-	if code, v := e.send(tok, e.cust.UID, "text", "z"); code != 200 {
-		t.Fatalf("force-trans on human: %d %v", code, v)
+	if code, v := e.send(tok, e.cust.UID, "text", "z"); code != 403 || errcode(v) != ErrCodeDisabled {
+		t.Fatalf("force-end on human: %d %v", code, v)
 	}
 	if c, _ = e.st.Customer(context.Background(), e.cust.ID); c.FenceSource == state.FenceManual {
 		t.Fatalf("must not set manual fence: %s/%s", c.State, c.FenceSource)
 	}
-	if got := e.ad.transed(); len(got) == 0 || got[len(got)-1] != OfficialStateAI {
-		t.Fatalf("expected Trans(1), got %v", got)
+	if got := e.ad.transed(); len(got) == 0 || got[len(got)-1] != OfficialStateClosed {
+		t.Fatalf("expected Trans(4), got %v", got)
 	}
 }
 

@@ -72,13 +72,15 @@ func (a *fakeAdapter) TransServiceState(_ context.Context, _ Binding, _ Customer
 	if a.transNoPromote {
 		return "msg-code-test", nil
 	}
-	// Successful force-trans to AI updates the fake official view.
+	// Successful trans updates the fake official view.
 	if officialState == OfficialStateAI {
 		a.svcState = state.CustomerAIEligible
 	} else if officialState == OfficialStateWaiting {
 		a.svcState = state.CustomerWaitingHuman
 	} else if officialState == OfficialStateHuman {
 		a.svcState = state.CustomerHuman
+	} else if officialState == OfficialStateClosed {
+		a.svcState = state.CustomerClosed
 	}
 	return "msg-code-test", nil
 }

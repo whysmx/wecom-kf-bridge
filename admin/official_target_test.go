@@ -140,15 +140,16 @@ func TestOfficialTargetBoundaryFourSelectable(t *testing.T) {
 	}
 }
 
-// Recovery must call TransServiceState with official 1, never 0, when both
-// map to AI_ELIGIBLE (regression for WeCom errcode 40058).
-func TestRecoverTransferUsesOfficialAI1NotZero(t *testing.T) {
+// Recover must end official session with trans→4 (CLOSED), never →1/→0.
+// WeCom rejects 2→1 / 3→1 with 95016; 0 is illegal for trans (40058).
+func TestRecoverTransferUsesOfficialClosed4NotAI(t *testing.T) {
 	e := newEnv(t, func(c *Config) {
 		c.ServiceStateMap = map[int]string{
 			0: state.CustomerAIEligible,
 			1: state.CustomerAIEligible,
 			2: state.CustomerWaitingHuman,
 			3: state.CustomerHuman,
+			4: state.CustomerClosed,
 		}
 	})
 	cl := e.login()
@@ -166,8 +167,14 @@ func TestRecoverTransferUsesOfficialAI1NotZero(t *testing.T) {
 	if nc.State != state.CustomerAIEligible {
 		t.Fatalf("recover: state=%s", nc.State)
 	}
-	if e.kf.count("trans:ext-secret-id:1") == 0 {
-		t.Fatalf("recover must trans→1 (AI), not 0: %v", e.kf.calls)
+	if nc.OfficialStatus != state.CustomerClosed {
+		t.Fatalf("recover official=%s; want CLOSED", nc.OfficialStatus)
+	}
+	if e.kf.count("trans:ext-secret-id:4") == 0 {
+		t.Fatalf("recover must trans→4 (CLOSED), not →1: %v", e.kf.calls)
+	}
+	if e.kf.count("trans:ext-secret-id:1") != 0 {
+		t.Fatalf("must never trans→1 on recover (95016): %v", e.kf.calls)
 	}
 	if e.kf.count("trans:ext-secret-id:0") != 0 {
 		t.Fatalf("must never trans→0 (40058): %v", e.kf.calls)

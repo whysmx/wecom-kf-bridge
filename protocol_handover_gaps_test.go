@@ -26,21 +26,24 @@ func TestSendAfterPhraseManualFenceStays70004(t *testing.T) {
 	}
 }
 
-// Auto fence + official WAITING_HUMAN → force Trans→1, clear fence, send.
-func TestSendForceTransFromWaitingHumanClearsAutoFence(t *testing.T) {
+// Auto fence + official WAITING_HUMAN → end→4, fail-closed (no send as AI).
+func TestSendForceEndFromWaitingHumanFailClosed(t *testing.T) {
 	e := newEnv(t)
 	tok := e.token()
 	_ = e.st.SetHandoverStatus(context.Background(), e.cust.ID, state.CustomerWaitingHuman, "service_state_precheck")
 	before, _ := e.st.Customer(context.Background(), e.cust.ID)
 	e.ad.svcState = state.CustomerWaitingHuman
-	if code, v := e.send(tok, e.cust.UID, "text", "from-waiting"); code != 200 || errcode(v) != 0 {
+	if code, v := e.send(tok, e.cust.UID, "text", "from-waiting"); code != 403 || errcode(v) != ErrCodeDisabled {
 		t.Fatalf("%d %v", code, v)
 	}
 	after, _ := e.st.Customer(context.Background(), e.cust.ID)
-	if after.State != state.CustomerAIEligible || after.FenceSource != "" || after.Generation != before.Generation {
+	if after.FenceSource != state.FenceAuto || after.Generation != before.Generation {
 		t.Fatalf("%+v gen %d→%d", after, before.Generation, after.Generation)
 	}
-	if got := e.ad.transed(); len(got) != 1 || got[0] != OfficialStateAI {
-		t.Fatalf("trans %v", got)
+	if got := e.ad.transed(); len(got) != 1 || got[0] != OfficialStateClosed {
+		t.Fatalf("trans %v want →4", got)
+	}
+	if len(e.ad.sent()) != 0 {
+		t.Fatal("sent")
 	}
 }
