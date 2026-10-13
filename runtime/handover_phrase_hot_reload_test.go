@@ -31,7 +31,7 @@ func TestOnHandoverPhraseUsesHotReloadedScripts(t *testing.T) {
 	 "security":{"master_key_env":"HR_MASTER","callback_targets":[{"host":"127.0.0.1","port":9,"allowed_cidrs":["127.0.0.0/8"]}]},
 	 "wecom":{"allow_insecure_http":true,"api_base_url":%q,"customer_origins":[3],"service_state_map":{"0":"AI_ELIGIBLE","1":"AI_ELIGIBLE","2":"WAITING_HUMAN","3":"HUMAN","4":"CLOSED"},"handover_phrase":"转人工","handover_welcome":"旧排队话术"},
 	 "enterprises":[{"id":"e1","tenant_key":"acme","corp_id":"wwcorp","secret_env":"HR_SECRET","callback_token_env":"HR_CBTOK","callback_aes_key_env":"HR_CBAES"}],
-	 "bindings":[{"id":"b1","enterprise_id":"e1","open_kfid":"kf1","project_id":"p1","virtual_corp_id":"bridge_a","agent_id":"1000002","virtual_secret_env":"HR_VSECRET","callback_token_env":"HR_VTOK","callback_aes_key_env":"HR_VAES","callback_url":"http://127.0.0.1:9/cb"}]}`,
+	 "bindings":[{"id":"b1","enterprise_id":"e1","open_kfid":"kf1","project_id":"p1","virtual_corp_id":"bridge_a","agent_id":"1000002","virtual_secret_env":"HR_VSECRET","callback_token_env":"HR_VTOK","callback_aes_key_env":"HR_VAES","callback_url":"http://127.0.0.1:9/cb","servicer_userid":"WenHaiYan"}]}`,
 		t.TempDir()+"/hr.db", wx.URL)
 	cfg, err := ParseConfig([]byte(raw))
 	if err != nil {

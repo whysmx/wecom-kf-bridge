@@ -826,7 +826,7 @@ func (s *Store) BeginHandover(ctx context.Context, customerID, reason string) (C
 }
 
 // MarkManualFence plants fence_source=manual without requiring a state change.
-// Used as compensation when BeginHandover fails after an official trans→2
+// Used as compensation when BeginHandover fails after an official trans→3
 // succeeded: inbound must not ForceTrans→1, and send/delivery treat manual
 // as held even if state is still AI_ELIGIBLE.
 func (s *Store) MarkManualFence(ctx context.Context, customerID, reason string) (Customer, error) {

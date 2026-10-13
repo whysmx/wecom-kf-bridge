@@ -3,8 +3,8 @@ package runtime
 import "strings"
 
 // Default transfer / event phrases for send_msg_on_event (WeCom: queue tip,
-// human-join tip, end tip). Queue is wired on trans→2; end is sent on admin
-// recover trans→4 when HandoverEndScript is configured.
+// human-join tip, end tip). Queue tip is wired on intentional trans→3; end is
+// sent on admin recover trans→4 when HandoverEndScript is configured.
 const (
 	defaultHandoverQueueScript = "正在为您转接人工客服，请稍候…"
 	defaultHandoverHumanScript = "人工客服已接入，请描述您的问题。"
@@ -15,9 +15,9 @@ const (
 // Official msg_code from kf/service_state/trans (or event callback) is the
 // only delivery channel — never a parallel send path.
 type HandoverScripts struct {
-	// Queue is sent after intentional trans→2 (waiting / 排队提示语).
+	// Queue is sent after intentional trans→3 (human assigned / transfer tip).
 	Queue string `json:"queue"`
-	// Human is reserved for trans→3 / pool-accept tip (配置可存；本 PR 转人工路径不发).
+	// Human is reserved for pool-accept tip (config stored; minimal path still sends Queue).
 	Human string `json:"human"`
 	// End is sent on admin recover after confirmed trans→4 (send_msg_on_event).
 	End string `json:"end"`

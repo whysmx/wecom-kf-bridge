@@ -160,8 +160,11 @@ func TestRecoverTransferUsesOfficialClosed4NotAI(t *testing.T) {
 	if cu.State != state.CustomerHuman {
 		t.Fatalf("handover: state=%s", cu.State)
 	}
-	if e.kf.count("trans:ext-secret-id:2") == 0 {
-		t.Fatalf("handover should trans→2: %v", e.kf.calls)
+	if e.kf.count("trans:ext-secret-id:3:WenHaiYan") == 0 {
+		t.Fatalf("handover should trans→3 with servicer: %v", e.kf.calls)
+	}
+	if e.kf.count("trans:ext-secret-id:2") != 0 {
+		t.Fatalf("handover must not trans→2: %v", e.kf.calls)
 	}
 	cl.post(path+"/recover", url.Values{"revision": {itoa64(cu.Revision)}})
 	nc := mustCustomer(t, e)
@@ -171,10 +174,7 @@ func TestRecoverTransferUsesOfficialClosed4NotAI(t *testing.T) {
 	if nc.OfficialStatus != state.CustomerClosed {
 		t.Fatalf("recover official=%s; want CLOSED", nc.OfficialStatus)
 	}
-	// After handover official is WAITING(2): recover must 2→3(servicer)→4.
-	if e.kf.count("trans:ext-secret-id:3:WenHaiYan") == 0 {
-		t.Fatalf("WAITING recover must trans→3 with servicer: %v", e.kf.calls)
-	}
+	// After intentional handoff official is HUMAN(3): recover only →4.
 	if e.kf.count("trans:ext-secret-id:4") == 0 {
 		t.Fatalf("recover must trans→4 (CLOSED), not →1: %v", e.kf.calls)
 	}
@@ -189,7 +189,7 @@ func TestRecoverTransferUsesOfficialClosed4NotAI(t *testing.T) {
 func TestHandoverTransferRejectsWhenOnlyIllegalZeroMapped(t *testing.T) {
 	e := newEnv(t, func(c *Config) {
 		c.ServiceStateMap = map[int]string{
-			0: state.CustomerWaitingHuman, // illegal for WAITING_HUMAN target
+			0: state.CustomerHuman, // illegal for HUMAN target
 			1: state.CustomerAIEligible,
 		}
 	})
@@ -212,11 +212,17 @@ func TestHandoverTransferRejectsWhenOnlyIllegalZeroMapped(t *testing.T) {
 // WAITING recover without bindings[].servicer_userid fails with 未配置接待人 and never calls 2→4.
 func TestRecoverWaitingWithoutServicerFails(t *testing.T) {
 	e := newEnv(t)
-	e.rt.configBindings[0].ServicerUserID = ""
 	cl := e.login()
 	path := "/admin/customers/" + e.cust.ID
-	cl.post(path+"/handover", rev(t, e))
+	cl.post(path+"/handover", rev(t, e)) // needs servicer for →3
 	cu := mustCustomer(t, e)
+	if cu.State != state.CustomerHuman {
+		t.Fatalf("handover precondition: %s", cu.State)
+	}
+	e.rt.configBindings[0].ServicerUserID = ""
+	e.kf.mu.Lock()
+	e.kf.states["ext-secret-id"] = 2 // simulate stuck WAITING
+	e.kf.mu.Unlock()
 	beforeCalls := len(e.kf.calls)
 	cl.post(path+"/recover", url.Values{"revision": {itoa64(cu.Revision)}})
 	if !strings.Contains(cl.flash(), "未配置接待人") {

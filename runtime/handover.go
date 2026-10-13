@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	bridge "github.com/whysmx/wecom-kf-bridge"
@@ -30,7 +31,7 @@ func (h HandoverConfig) phrase() string {
 	return p
 }
 
-// welcome returns the queue tip used with trans→2 msg_code → send_msg_on_event.
+// welcome returns the transfer tip used with trans→3 msg_code → send_msg_on_event.
 func (h HandoverConfig) welcome() string {
 	return h.Scripts.queueText(h.Welcome)
 }
@@ -41,14 +42,20 @@ func MatchHandoverPhrase(cfg HandoverConfig, content string) bool {
 }
 
 // RequestHumanHandover performs the intentional handoff:
-// official trans → WAITING (2), optional send_msg_on_event, then local
-// BeginHandover (manual fence). Does not delete servicers.
+// official trans → HUMAN (3) with bindings[].servicer_userid, optional
+// send_msg_on_event (queue tip), then local BeginHandover (manual fence).
+// Stops at 3 — does not auto 3→4. Missing servicer → 未配置接待人 (no silent
+// fallback to WAITING/2→4). Does not delete servicers.
 //
-// P1: if official trans→2 succeeded but BeginHandover fails, compensate with
-// MarkManualFence so inbound pullBack will not ForceTrans→1 and AI stays paused.
+// P1: if official trans→3 succeeded but BeginHandover fails, compensate with
+// MarkManualFence so inbound pullBack will not ForceTrans→4 and AI stays paused.
 func RequestHumanHandover(ctx context.Context, store *state.Store, ad bridge.Adapter, b bridge.Binding, c state.Customer, cfg HandoverConfig, reason string) error {
+	sid := strings.TrimSpace(b.ServicerUserID)
+	if sid == "" {
+		return errors.New("未配置接待人")
+	}
 	cust := bridge.Customer{ID: c.ID, BindingID: c.BindingID, ExternalUserID: c.ExternalUserID, UserID: c.UID}
-	msgCode, err := ad.TransServiceState(ctx, b, cust, bridge.OfficialStateWaiting, "")
+	msgCode, err := ad.TransServiceState(ctx, b, cust, bridge.OfficialStateHuman, sid)
 	if err != nil {
 		return err
 	}
@@ -56,15 +63,14 @@ func RequestHumanHandover(ctx context.Context, store *state.Store, ad bridge.Ada
 		_ = ad.SendMsgOnEvent(ctx, b, msgCode, cfg.welcome())
 	}
 	if _, err := store.BeginHandover(ctx, c.ID, reason); err != nil {
-		// Official already WAITING: must plant manual intent before returning.
+		// Official already HUMAN: must plant manual intent before returning.
 		if _, cerr := store.MarkManualFence(ctx, c.ID, reason+"_compensate"); cerr != nil {
 			return err
 		}
-		_ = store.SetOfficialStatus(ctx, c.ID, state.CustomerWaitingHuman)
+		_ = store.SetOfficialStatus(ctx, c.ID, state.CustomerHuman)
 		return nil
 	}
-	// Prefer HUMAN if a later get would show 3; WAITING is enough for the fence.
-	_ = store.SetHandoverStatus(ctx, c.ID, state.CustomerWaitingHuman, reason)
-	_ = store.SetOfficialStatus(ctx, c.ID, state.CustomerWaitingHuman)
+	_ = store.SetHandoverStatus(ctx, c.ID, state.CustomerHuman, reason)
+	_ = store.SetOfficialStatus(ctx, c.ID, state.CustomerHuman)
 	return nil
 }
