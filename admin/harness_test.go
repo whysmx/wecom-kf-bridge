@@ -59,7 +59,7 @@ func (f *fakeKF) ServiceState(_ context.Context, kf, ext string) (int, error) {
 	return f.states[ext], nil
 }
 func (f *fakeKF) SendMsgOnEvent(_ context.Context, code, text string) error {
-	f.record("event:" + code)
+	f.record("event:" + code + ":" + text)
 	return nil
 }
 
