@@ -33,8 +33,12 @@ type fakeKF struct {
 	// official service state per external user
 	states   map[string]int
 	transErr error
-	getErr   error
-	stuck    bool // trans "succeeds" but state does not change
+	// transErrFor fails only when Trans targets that official state (e.g. 4 after 2→3).
+	transErrFor map[int]error
+	getErr      error
+	stuck       bool // trans "succeeds" but state does not change
+	// stuckFor leaves state unchanged only when targeting that official state.
+	stuckFor map[int]bool
 }
 
 func (f *fakeKF) TransServiceState(_ context.Context, kf, ext string, st int, servicer string) (string, error) {
@@ -43,12 +47,21 @@ func (f *fakeKF) TransServiceState(_ context.Context, kf, ext string, st int, se
 	} else {
 		f.record(fmt.Sprintf("trans:%s:%d", ext, st))
 	}
+	if f.transErrFor != nil {
+		if err := f.transErrFor[st]; err != nil {
+			return "", err
+		}
+	}
 	if f.transErr != nil {
 		return "", f.transErr
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if !f.stuck {
+	stuck := f.stuck
+	if f.stuckFor != nil && f.stuckFor[st] {
+		stuck = true
+	}
+	if !stuck {
 		f.states[ext] = st
 	}
 	return "msg-code-admin", nil

@@ -272,3 +272,120 @@ func TestHandoverWelcomeSentOnTransToWaiting(t *testing.T) {
 		t.Fatalf("welcome not sent: %v", e.kf.calls)
 	}
 }
+
+// WAITING 2→3 OK then definitive 3→4 reject: stay human, no generation bump, never →1.
+func TestRecoverWaitingTrans4RejectedAfter3(t *testing.T) {
+	e := newEnv(t)
+	cl := e.login()
+	cu := putHuman(t, e, cl)
+	e.kf.transErrFor = map[int]error{4: &wecom.APIError{Code: 95014, Message: "no permission"}}
+	before1 := e.kf.count("trans:ext-secret-id:1")
+	cl.post("/admin/customers/"+e.cust.ID+"/recover", url.Values{"revision": {itoa64(cu.Revision)}})
+	got := mustCustomer(t, e)
+	if got.State != state.CustomerHuman || got.Generation != cu.Generation {
+		t.Fatalf("3→4 reject must not local-recover: %+v", got)
+	}
+	if !strings.Contains(cl.flash(), "3→4") {
+		t.Fatalf("flash=%q", cl.flash())
+	}
+	if e.kf.count("trans:ext-secret-id:3:WenHaiYan") == 0 {
+		t.Fatalf("2→3 must have run: %v", e.kf.calls)
+	}
+	if e.kf.count("trans:ext-secret-id:1") != before1 {
+		t.Fatalf("never →1: %v", e.kf.calls)
+	}
+}
+
+// WAITING 2→3 OK then 3→4 uncertain (stuck readback): UNKNOWN, no →1.
+func TestRecoverWaitingTrans4UncertainAfter3(t *testing.T) {
+	e := newEnv(t)
+	cl := e.login()
+	cu := putHuman(t, e, cl)
+	e.kf.stuckFor = map[int]bool{4: true}
+	cl.post("/admin/customers/"+e.cust.ID+"/recover", url.Values{"revision": {itoa64(cu.Revision)}})
+	got := mustCustomer(t, e)
+	if got.Generation != cu.Generation || got.State != state.CustomerUnknown || got.OfficialStatus != state.CustomerUnknown {
+		t.Fatalf("3→4 uncertain want UNKNOWN: %+v", got)
+	}
+	if !strings.Contains(cl.flash(), "UNKNOWN") {
+		t.Fatalf("flash=%q", cl.flash())
+	}
+	if e.kf.count("trans:ext-secret-id:3:WenHaiYan") == 0 {
+		t.Fatalf("2→3 must have run: %v", e.kf.calls)
+	}
+	if e.kf.count("trans:ext-secret-id:1") != 0 {
+		t.Fatalf("never →1: %v", e.kf.calls)
+	}
+}
+
+// Official HUMAN(3): definitive end→4 reject keeps local human.
+func TestRecoverHumanTrans4Rejected(t *testing.T) {
+	e := newEnv(t)
+	cl := e.login()
+	cu := putHuman(t, e, cl)
+	e.kf.mu.Lock()
+	e.kf.states["ext-secret-id"] = 3
+	e.kf.mu.Unlock()
+	e.kf.transErr = &wecom.APIError{Code: 1, Message: "denied"}
+	before := len(e.kf.calls)
+	cl.post("/admin/customers/"+e.cust.ID+"/recover", url.Values{"revision": {itoa64(cu.Revision)}})
+	got := mustCustomer(t, e)
+	if got.State != state.CustomerHuman || got.Generation != cu.Generation {
+		t.Fatalf("HUMAN→4 reject must not change local: %+v", got)
+	}
+	if !strings.Contains(cl.flash(), "官方结束被拒") {
+		t.Fatalf("flash=%q", cl.flash())
+	}
+	for _, c := range e.kf.calls[before:] {
+		if strings.HasPrefix(c, "trans:ext-secret-id:3:") {
+			t.Fatalf("HUMAN must not trans→3: %v", e.kf.calls[before:])
+		}
+		if strings.HasPrefix(c, "trans:ext-secret-id:1") {
+			t.Fatalf("never →1: %v", e.kf.calls[before:])
+		}
+	}
+}
+
+// Official HUMAN(3): uncertain end→4 → UNKNOWN.
+func TestRecoverHumanTrans4Uncertain(t *testing.T) {
+	e := newEnv(t)
+	cl := e.login()
+	cu := putHuman(t, e, cl)
+	e.kf.mu.Lock()
+	e.kf.states["ext-secret-id"] = 3
+	e.kf.mu.Unlock()
+	e.kf.transErr = errLost
+	cl.post("/admin/customers/"+e.cust.ID+"/recover", url.Values{"revision": {itoa64(cu.Revision)}})
+	got := mustCustomer(t, e)
+	if got.Generation != cu.Generation || got.State != state.CustomerUnknown || got.OfficialStatus != state.CustomerUnknown {
+		t.Fatalf("HUMAN→4 uncertain want UNKNOWN: %+v", got)
+	}
+	if !strings.Contains(cl.flash(), "UNKNOWN") {
+		t.Fatalf("flash=%q", cl.flash())
+	}
+	if e.kf.count("trans:ext-secret-id:1") != 0 {
+		t.Fatalf("never →1: %v", e.kf.calls)
+	}
+}
+
+// bindingServicerUserID miss (binding id not in live config) → 未配置接待人.
+func TestRecoverWaitingServicerBindingNotInConfig(t *testing.T) {
+	e := newEnv(t)
+	e.rt.configBindings[0].ID = "not-b1"
+	cl := e.login()
+	cu := putHuman(t, e, cl)
+	before := len(e.kf.calls)
+	cl.post("/admin/customers/"+e.cust.ID+"/recover", url.Values{"revision": {itoa64(cu.Revision)}})
+	if !strings.Contains(cl.flash(), "未配置接待人") {
+		t.Fatalf("flash=%q", cl.flash())
+	}
+	nc := mustCustomer(t, e)
+	if nc.State != state.CustomerHuman || nc.Generation != cu.Generation {
+		t.Fatalf("must not recover: %+v", nc)
+	}
+	for _, c := range e.kf.calls[before:] {
+		if strings.HasPrefix(c, "trans:") {
+			t.Fatalf("must not trans without servicer: %v", e.kf.calls[before:])
+		}
+	}
+}
