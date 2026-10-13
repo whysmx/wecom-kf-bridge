@@ -71,9 +71,12 @@ type Config struct {
 		// HandoverPhrase is the exact inbound text (trim) that triggers the
 		// same intentional handoff as the admin button. Default 转人工.
 		HandoverPhrase string `json:"handover_phrase"`
-		// HandoverWelcome is sent via send_msg_on_event after trans→2.
-		// Default 正在为您转接人工客服，请稍候…
+		// HandoverWelcome is the legacy single queue tip (send_msg_on_event after
+		// trans→2). Prefer handover_scripts.queue; kept for backward compatibility.
 		HandoverWelcome string `json:"handover_welcome"`
+		// HandoverScripts are three configurable send_msg_on_event phrases:
+		// queue (trans→2), human (trans→3 tip), end (phase-3 recover; not sent here).
+		HandoverScripts HandoverScripts `json:"handover_scripts"`
 	} `json:"wecom"`
 	Enterprises []EnterpriseConfig `json:"enterprises"`
 	Bindings    []BindingConfig    `json:"bindings"`

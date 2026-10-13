@@ -79,6 +79,10 @@ type EditableSettings struct {
 	Treat48002AsAIEligible bool
 	ServiceStateMap        map[string]string // official int as string → internal state
 	PublicBaseURL          string
+	// Transfer scripts for send_msg_on_event (queue wired; human/end config-only this PR).
+	HandoverQueueScript string
+	HandoverHumanScript string
+	HandoverEndScript   string
 }
 
 // EditableBindingConfig is the config.json binding surface shown on the bindings page (#29).
@@ -380,11 +384,15 @@ func (c *Console) ApplyEditableSettings(s EditableSettings) {
 		m[n] = v
 	}
 	c.cfg.ServiceStateMap = m
+	if q := strings.TrimSpace(s.HandoverQueueScript); q != "" {
+		c.cfg.HandoverWelcome = q
+	}
 	// Refresh displayed rows that mirror editable fields; keep secret env names.
-	out := make([]Setting, 0, len(c.cfg.Settings)+3)
+	out := make([]Setting, 0, len(c.cfg.Settings)+6)
 	for _, row := range c.cfg.Settings {
 		switch row.Name {
-		case "service_state_map", "public_base_url", "treat_48002_as_ai_eligible":
+		case "service_state_map", "public_base_url", "treat_48002_as_ai_eligible",
+			"handover_scripts.queue", "handover_scripts.human", "handover_scripts.end":
 			continue
 		default:
 			out = append(out, row)
@@ -394,6 +402,9 @@ func (c *Console) ApplyEditableSettings(s EditableSettings) {
 		Setting{Group: "微信客服", Name: "service_state_map", Value: fmt.Sprint(s.ServiceStateMap)},
 		Setting{Group: "微信客服", Name: "treat_48002_as_ai_eligible", Value: fmt.Sprint(s.Treat48002AsAIEligible)},
 		Setting{Group: "服务", Name: "public_base_url", Value: s.PublicBaseURL},
+		Setting{Group: "转接话术", Name: "handover_scripts.queue", Value: s.HandoverQueueScript},
+		Setting{Group: "转接话术", Name: "handover_scripts.human", Value: s.HandoverHumanScript},
+		Setting{Group: "转接话术", Name: "handover_scripts.end", Value: s.HandoverEndScript},
 	)
 	c.cfg.Settings = out
 }

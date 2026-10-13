@@ -678,13 +678,20 @@ func (c *Console) settingsSave(r *http.Request, _ *session) result {
 	if len(m) == 0 {
 		return bad("service_state_map 不能为空对象 {}（避免误清空映射）")
 	}
-	s := EditableSettings{Treat48002AsAIEligible: treat, ServiceStateMap: m, PublicBaseURL: pub}
+	s := EditableSettings{
+		Treat48002AsAIEligible: treat,
+		ServiceStateMap:        m,
+		PublicBaseURL:          pub,
+		HandoverQueueScript:    strings.TrimSpace(r.PostFormValue("handover_queue_script")),
+		HandoverHumanScript:    strings.TrimSpace(r.PostFormValue("handover_human_script")),
+		HandoverEndScript:      strings.TrimSpace(r.PostFormValue("handover_end_script")),
+	}
 	if err := c.cfg.Runtime.SaveSettings(r.Context(), s); err != nil {
 		c.audit(r, "settings", "runtime", "save", "failed", err.Error(), 0)
 		return result{status: http.StatusBadRequest, flash: "保存失败：" + err.Error()}
 	}
 	// Hot-apply (incl. console) happens once inside Runtime.SaveSettings.
-	summary := fmt.Sprintf("treat_48002=%v public_base_url=%q map_keys=%d", treat, pub, len(m))
+	summary := fmt.Sprintf("treat_48002=%v public_base_url=%q map_keys=%d queue_script_len=%d", treat, pub, len(m), len(s.HandoverQueueScript))
 	if treat {
 		summary += "; WARNING joint-debug only never production"
 	}

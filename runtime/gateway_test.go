@@ -32,12 +32,13 @@ type fakeWeCom struct {
 	pages []string
 	// idle is next_cursor returned once pages are exhausted (default c9);
 	// cursors records the cursor of every sync_msg request.
-	idle      string
-	cursors   []string
-	transBody string // override service_state/trans JSON
-	stateGet  string // override service_state/get JSON
-	transN    int
-	eventN    int
+	idle       string
+	cursors    []string
+	transBody  string // override service_state/trans JSON
+	stateGet   string // override service_state/get JSON
+	transN     int
+	eventN     int
+	eventTexts []string // send_msg_on_event text.content captures
 }
 
 func (f *fakeWeCom) handler(t *testing.T) http.Handler {
@@ -85,8 +86,15 @@ func (f *fakeWeCom) handler(t *testing.T) http.Handler {
 		fmt.Fprint(w, body)
 	})
 	mux.HandleFunc("/cgi-bin/kf/send_msg_on_event", func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&req)
 		f.mu.Lock()
 		f.eventN++
+		if text, ok := req["text"].(map[string]any); ok {
+			if c, ok := text["content"].(string); ok {
+				f.eventTexts = append(f.eventTexts, c)
+			}
+		}
 		f.mu.Unlock()
 		fmt.Fprint(w, `{"errcode":0,"msgid":"ev1"}`)
 	})

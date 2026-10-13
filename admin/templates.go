@@ -105,6 +105,11 @@ callback_url <input name="callback_url" value="{{.Config.CallbackURL}}" size="40
 <p><label><input type="checkbox" name="treat_48002_as_ai_eligible" value="1" {{if .Data.Treat48002AsAIEligible}}checked{{end}}> wecom.treat_48002_as_ai_eligible（<strong>仅联调</strong>，严禁生产；保存需二次认证）</label></p>
 <p><label>wecom.service_state_map（JSON 对象）<br><textarea name="service_state_map" rows="6" cols="60" required>{{.Data.ServiceStateMapJSON}}</textarea></label></p>
 <p><label>server.public_base_url <input name="public_base_url" value="{{.Data.PublicBaseURL}}" size="48" placeholder="https://bridge.example.com"></label></p>
+<h3>转接话术（send_msg_on_event）</h3>
+<p>仅用官方 <code>trans</code> 返回的 <code>msg_code</code> 发送。排队句在转人工时发出；接入句预留；结束句留给阶段3回切（本页可配但不发送）。</p>
+<p><label>handover_scripts.queue（转人工/排队提示）<br><textarea name="handover_queue_script" rows="2" cols="60">{{.Data.HandoverQueueScript}}</textarea></label></p>
+<p><label>handover_scripts.human（接入提示，预留）<br><textarea name="handover_human_script" rows="2" cols="60">{{.Data.HandoverHumanScript}}</textarea></label></p>
+<p><label>handover_scripts.end（结束/回切，阶段3）<br><textarea name="handover_end_script" rows="2" cols="60">{{.Data.HandoverEndScript}}</textarea></label></p>
 <button>保存（需二次认证）</button></form>
 <h2>只读项</h2>
 <table>{{range .Data.Settings}}<tr><th>{{.Group}}</th><td>{{.Name}}</td><td>{{.Value}}</td></tr>{{end}}</table>

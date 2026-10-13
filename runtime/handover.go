@@ -9,14 +9,17 @@ import (
 )
 
 const (
-	defaultHandoverPhrase  = "转人工"
-	defaultHandoverWelcome = "正在为您转接人工客服，请稍候…"
+	defaultHandoverPhrase = "转人工"
+	// defaultHandoverWelcome kept as alias of defaultHandoverQueueScript for tests.
+	defaultHandoverWelcome = defaultHandoverQueueScript
 )
 
-// HandoverConfig is the phrase/welcome used by 口令 and admin paths.
+// HandoverConfig is the phrase + transfer scripts used by 口令 and admin paths.
+// Button and phrase share the same manual fence via RequestHumanHandover.
 type HandoverConfig struct {
-	Phrase  string // exact trim match; default 转人工
-	Welcome string // send_msg_on_event text; empty skips the event message
+	Phrase  string          // exact trim match; default 转人工
+	Welcome string          // legacy queue tip; Scripts.Queue wins when set
+	Scripts HandoverScripts // three configurable send_msg_on_event phrases
 }
 
 func (h HandoverConfig) phrase() string {
@@ -27,12 +30,9 @@ func (h HandoverConfig) phrase() string {
 	return p
 }
 
+// welcome returns the queue tip used with trans→2 msg_code → send_msg_on_event.
 func (h HandoverConfig) welcome() string {
-	w := strings.TrimSpace(h.Welcome)
-	if w == "" {
-		return defaultHandoverWelcome
-	}
-	return w
+	return h.Scripts.queueText(h.Welcome)
 }
 
 // MatchHandoverPhrase reports whether content is an exact (trim) phrase hit.

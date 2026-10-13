@@ -320,10 +320,14 @@ func (r consoleRuntime) EditableSettings() admin.EditableSettings {
 	for k, v := range cfg.WeCom.ServiceStateMap {
 		m[k] = v
 	}
+	scripts := NormalizeHandoverScripts(cfg.WeCom.HandoverScripts, cfg.WeCom.HandoverWelcome)
 	return admin.EditableSettings{
 		Treat48002AsAIEligible: cfg.WeCom.Treat48002AsAIEligible,
 		ServiceStateMap:        m,
 		PublicBaseURL:          cfg.Server.PublicBaseURL,
+		HandoverQueueScript:    scripts.Queue,
+		HandoverHumanScript:    scripts.Human,
+		HandoverEndScript:      scripts.End,
 	}
 }
 
@@ -342,6 +346,15 @@ func (r consoleRuntime) SaveSettings(_ context.Context, s admin.EditableSettings
 	cfg.WeCom.Treat48002AsAIEligible = s.Treat48002AsAIEligible
 	cfg.WeCom.ServiceStateMap = s.ServiceStateMap
 	cfg.Server.PublicBaseURL = s.PublicBaseURL
+	cfg.WeCom.HandoverScripts = HandoverScripts{
+		Queue: strings.TrimSpace(s.HandoverQueueScript),
+		Human: strings.TrimSpace(s.HandoverHumanScript),
+		End:   strings.TrimSpace(s.HandoverEndScript),
+	}
+	// Keep legacy welcome aligned with queue so older readers stay consistent.
+	if cfg.WeCom.HandoverScripts.Queue != "" {
+		cfg.WeCom.HandoverWelcome = cfg.WeCom.HandoverScripts.Queue
+	}
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
@@ -365,6 +378,14 @@ func (g *Gateway) applyEditableSettings(s admin.EditableSettings) {
 		g.liveCfg.WeCom.ServiceStateMap[k] = v
 	}
 	g.liveCfg.Server.PublicBaseURL = s.PublicBaseURL
+	g.liveCfg.WeCom.HandoverScripts = HandoverScripts{
+		Queue: strings.TrimSpace(s.HandoverQueueScript),
+		Human: strings.TrimSpace(s.HandoverHumanScript),
+		End:   strings.TrimSpace(s.HandoverEndScript),
+	}
+	if g.liveCfg.WeCom.HandoverScripts.Queue != "" {
+		g.liveCfg.WeCom.HandoverWelcome = g.liveCfg.WeCom.HandoverScripts.Queue
+	}
 	g.cfgMu.Unlock()
 	if g.adapter != nil {
 		g.adapter.setEditableWeCom(s.Treat48002AsAIEligible, states)
@@ -528,7 +549,7 @@ func (g *Gateway) buildAdmin(cfg Config) (http.Handler, error) {
 		InsecureCookie:  cfg.Admin.InsecureCookie,
 		LanNoLogin:      cfg.Admin.LanNoLoginEnabled(),
 		ServiceStateMap: g.adapter.states,
-		HandoverWelcome: HandoverConfig{Welcome: cfg.WeCom.HandoverWelcome}.welcome(),
+		HandoverWelcome: HandoverConfig{Welcome: cfg.WeCom.HandoverWelcome, Scripts: cfg.WeCom.HandoverScripts}.welcome(),
 		SessionTTL:      time.Duration(cfg.Admin.SessionTTLMinutes) * time.Minute, MaxSessions: cfg.Admin.MaxSessions,
 	})
 	if err != nil {
