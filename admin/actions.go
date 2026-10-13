@@ -711,6 +711,7 @@ func (c *Console) customerRecover(r *http.Request, _ *session) result {
 	}
 	return result{location: "/admin/customers?q=" + nc.ID, flash: flash}
 }
+
 // ---- 诊断 / 设置 ----
 
 func (c *Console) diagMark(r *http.Request, _ *session) result {

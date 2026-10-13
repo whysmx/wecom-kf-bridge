@@ -222,7 +222,7 @@ func (g *Gateway) wire(ctx context.Context, cfg Config, logger Logger) error {
 		logger.Log("handover_force_end", map[string]any{
 			"binding_id": bindingID, "customer_id": c.ID, "from_mapped": fromMapped,
 			"external_userid_prefix": bridge.TruncateID(c.ExternalUserID, 8),
-			"path": "inbound", "note": "waiting_via_3_then_4",
+			"path":                   "inbound", "note": "waiting_via_3_then_4",
 		})
 		if err := bridge.EndOfficialHumanSession(ctx, adapter, b, cust, fromMapped); err != nil {
 			logger.Log("handover_force_end_failed", map[string]any{

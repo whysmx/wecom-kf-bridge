@@ -107,14 +107,14 @@ type EditableBindingConfig struct {
 // BindingConfigPatch is the mutable subset a bindings form may submit (#29).
 // EnterpriseID/OpenKfID are echoed for immutability checks and must match config.
 type BindingConfigPatch struct {
-	EnterpriseID    string
-	OpenKfID        string
-	ProjectID       string
-	VirtualCorpID   string
-	AgentID         string
-	CallbackURL     string
-	Disabled        bool
-	ServicerUserID  string
+	EnterpriseID   string
+	OpenKfID       string
+	ProjectID      string
+	VirtualCorpID  string
+	AgentID        string
+	CallbackURL    string
+	Disabled       bool
+	ServicerUserID string
 }
 
 // Setting is one displayed configuration value (never a secret value).
