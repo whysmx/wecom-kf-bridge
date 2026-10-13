@@ -572,6 +572,25 @@ func (c *Client) SendMsg(ctx context.Context, accessToken string, req SendReques
 	return out, err
 }
 
+// EventMsgRequest is the body for /cgi-bin/kf/send_msg_on_event (welcome /
+// queue / end phrases keyed by a one-shot msg_code from trans or callback).
+type EventMsgRequest struct {
+	Code    string    `json:"code"`
+	MsgID   string    `json:"msgid,omitempty"`
+	MsgType string    `json:"msgtype"`
+	Text    *SendText `json:"text,omitempty"`
+}
+
+// SendMsgOnEvent sends one event-response message using a one-shot code.
+func (c *Client) SendMsgOnEvent(ctx context.Context, accessToken string, req EventMsgRequest) (SendResponse, error) {
+	if strings.TrimSpace(accessToken) == "" || strings.TrimSpace(req.Code) == "" || strings.TrimSpace(req.MsgType) == "" {
+		return SendResponse{}, fmt.Errorf("%w: event code/msgtype required", ErrInvalidArgument)
+	}
+	var out SendResponse
+	err := c.doJSON(ctx, http.MethodPost, "/cgi-bin/kf/send_msg_on_event", accessToken, nil, req, &out)
+	return out, err
+}
+
 // ChunkText splits only at UTF-8 rune boundaries and never exceeds maxBytes.
 // Invalid UTF-8 is rejected rather than silently replaced.
 func ChunkText(text string, maxBytes int) ([]string, error) {

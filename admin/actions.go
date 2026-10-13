@@ -481,11 +481,18 @@ func (c *Console) transfer(r *http.Request, cu state.Customer, internal string, 
 	if err != nil {
 		return "", true, errors.New("绑定不存在")
 	}
-	if err := c.cfg.KF.TransServiceState(r.Context(), b.OpenKfID, cu.ExternalUserID, target); err != nil {
+	msgCode, err := c.cfg.KF.TransServiceState(r.Context(), b.OpenKfID, cu.ExternalUserID, target)
+	if err != nil {
 		if definitive(err) {
 			return "", true, err
 		}
 		return "", false, nil
+	}
+	// Welcome phrase only on intentional handoff (trans→waiting), never on recover→AI.
+	if msgCode != "" && internal == state.CustomerWaitingHuman {
+		if w := strings.TrimSpace(c.cfg.HandoverWelcome); w != "" {
+			_ = c.cfg.KF.SendMsgOnEvent(r.Context(), msgCode, w)
+		}
 	}
 	got, err := c.cfg.KF.ServiceState(r.Context(), b.OpenKfID, cu.ExternalUserID)
 	if err != nil {

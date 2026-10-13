@@ -32,9 +32,12 @@ type KF interface {
 	DeleteAccount(ctx context.Context, openKfID string) error
 	ContactURL(ctx context.Context, openKfID, scene string) (string, error)
 	// TransServiceState / ServiceState: official reception state
-	// (/cgi-bin/kf/service_state/trans and /get).
-	TransServiceState(ctx context.Context, openKfID, externalUserID string, state int) error
+	// (/cgi-bin/kf/service_state/trans and /get). Trans returns msg_code
+	// for send_msg_on_event (may be empty).
+	TransServiceState(ctx context.Context, openKfID, externalUserID string, state int) (msgCode string, err error)
 	ServiceState(ctx context.Context, openKfID, externalUserID string) (int, error)
+	// SendMsgOnEvent sends a one-shot queue/welcome phrase; no-op if code empty.
+	SendMsgOnEvent(ctx context.Context, msgCode, text string) error
 }
 
 // Credentials are the virtual cc-connect credentials of a binding.
@@ -133,6 +136,8 @@ type Config struct {
 	// (wecom.service_state_map). Handover transfers to the value mapped to
 	// WAITING_HUMAN, recovery to AI_ELIGIBLE.
 	ServiceStateMap map[int]string
+	// HandoverWelcome is sent via send_msg_on_event after admin/phrase trans.
+	HandoverWelcome string
 	// GatewayBaseURL is the public base URL cc-connect uses as api_base_url
 	// (server.public_base_url). Empty exports a placeholder to fill in.
 	GatewayBaseURL string

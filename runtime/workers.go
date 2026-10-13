@@ -186,6 +186,10 @@ type DeliveryWorker struct {
 	// OfficialState queries the official service_state (mapped) for an
 	// automatically fenced customer; nil disables automatic recovery.
 	OfficialState func(ctx context.Context, bindingID string, c state.Customer) (string, error)
+	// HandoverPhrase exact-match (trim) triggers intentional human handoff.
+	HandoverPhrase string
+	// OnHandoverPhrase runs the official+local handoff; nil disables 口令.
+	OnHandoverPhrase func(ctx context.Context, c state.Customer, m state.InboxMessage) error
 
 	kick chan struct{}
 	once sync.Once
@@ -360,6 +364,14 @@ func (d *DeliveryWorker) deliver(ctx context.Context, m state.InboxMessage) bool
 	c, err := d.Store.Customer(ctx, m.CustomerID)
 	if err != nil {
 		return false
+	}
+	if d.OnHandoverPhrase != nil && m.Type == "text" && MatchHandoverPhrase(HandoverConfig{Phrase: d.HandoverPhrase}, m.PayloadRef) {
+		if err := d.OnHandoverPhrase(ctx, c, m); err != nil {
+			d.Logger.Log("handover_phrase_failed", map[string]any{"customer_id": c.ID, "inbox_id": m.ID, "error": err.Error()})
+			return step(state.InboxHeld, "handover_phrase_failed")
+		}
+		d.Logger.Log("handover_phrase_ok", map[string]any{"customer_id": c.ID, "inbox_id": m.ID})
+		return step(state.InboxHeld, "handover_phrase")
 	}
 	if c.State != state.CustomerAIEligible && c.FenceSource == state.FenceAuto && c.Authorized && c.Generation == m.Generation {
 		c, m = d.autoRecover(ctx, c, m)

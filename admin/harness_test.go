@@ -37,17 +37,17 @@ type fakeKF struct {
 	stuck    bool // trans "succeeds" but state does not change
 }
 
-func (f *fakeKF) TransServiceState(_ context.Context, kf, ext string, st int) error {
+func (f *fakeKF) TransServiceState(_ context.Context, kf, ext string, st int) (string, error) {
 	f.record(fmt.Sprintf("trans:%s:%d", ext, st))
 	if f.transErr != nil {
-		return f.transErr
+		return "", f.transErr
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if !f.stuck {
 		f.states[ext] = st
 	}
-	return nil
+	return "msg-code-admin", nil
 }
 func (f *fakeKF) ServiceState(_ context.Context, kf, ext string) (int, error) {
 	f.record("get:" + ext)
@@ -57,6 +57,10 @@ func (f *fakeKF) ServiceState(_ context.Context, kf, ext string) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.states[ext], nil
+}
+func (f *fakeKF) SendMsgOnEvent(_ context.Context, code, text string) error {
+	f.record("event:" + code)
+	return nil
 }
 
 func (f *fakeKF) record(s string) { f.mu.Lock(); f.calls = append(f.calls, s); f.mu.Unlock() }

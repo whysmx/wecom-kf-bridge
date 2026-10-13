@@ -885,6 +885,44 @@ func (s *Store) ObserveOfficialAI(ctx context.Context, customerID string) (Custo
 	return nc, true, nil
 }
 
+
+// ClearAutoFenceInPlace drops an automatic fence without rotating generation.
+// Used after a successful force-trans back to AI on the send path so the
+// current UID may continue. Manual fences are never cleared here.
+func (s *Store) ClearAutoFenceInPlace(ctx context.Context, customerID, reason string) (Customer, error) {
+	defer s.lock("customer:" + customerID)()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Customer{}, err
+	}
+	defer tx.Rollback()
+	c, err := scanCustomer(tx.QueryRowContext(ctx, `SELECT `+customerCols+` FROM customers WHERE id=?`, customerID))
+	if err != nil {
+		return Customer{}, mapNotFound(err)
+	}
+	if c.State == CustomerAIEligible {
+		return c, nil
+	}
+	if c.FenceSource != FenceAuto {
+		return c, ErrHeld
+	}
+	now := s.now()
+	if _, err = tx.ExecContext(ctx, `UPDATE customers SET state=?,fence_source='',revision=revision+1,updated_at=? WHERE id=?`, CustomerAIEligible, unix(now), customerID); err != nil {
+		return Customer{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO handover_events(customer_id,old_generation,state,reason,created_at) VALUES(?,?,?,?,?)`, customerID, c.Generation, CustomerAIEligible, reason, unix(now)); err != nil {
+		return Customer{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return Customer{}, err
+	}
+	c.State = CustomerAIEligible
+	c.FenceSource = ""
+	c.Revision++
+	c.UpdatedAt = now
+	return c, nil
+}
+
 func (s *Store) RecoverCustomer(ctx context.Context, customerID, reason string) (Customer, error) {
 	defer s.lock("customer:" + customerID)()
 	tx, err := s.db.BeginTx(ctx, nil)

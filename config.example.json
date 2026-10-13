@@ -41,7 +41,9 @@
     "customer_origins": [
       3
     ],
-    "service_state_map": {}
+    "service_state_map": {},
+    "handover_phrase": "转人工",
+    "handover_welcome": "正在为您转接人工客服，请稍候…"
   },
   "enterprises": [
     {

@@ -11,6 +11,7 @@
 
 ### 新增
 
+- 实验分支 `feat/human-handover`（#31）：无本地 manual 意图且官方 `service_state` 为 2/3 时，发前强制 `trans→1` 拉回 AI 再发；口令「转人工」与后台按钮同一套（`trans→2` + `send_msg_on_event` + manual 栅栏）；不删接待人、不改 `treat_48002` 旁路语义。
 - 管理后台绑定页：对 `config.json` 中已有绑定可在线编辑 `project_id` / `virtual_corp_id` / `agent_id` / `callback_url` / `disabled`，写回配置并热加载（CSRF + 二次认证）；身份字段与密钥 env 只读；审计 `config_save`（#29）。
 - 管理后台支持 `admin.listen` 绑定 `0.0.0.0`（须显式 `admin.origin` + `insecure_cookie` 方可明文 http）；新增 `admin.lan_no_login`（默认 `true`）：私网/回环客户端免密进控制台，CSRF/同源保护保留，免登会话跳过 step-up 输密，审计标明 `admin-lan@` / `lan_no_login`；非私网仍须密码登录。
 - 管理后台「系统设置」可在线保存：`wecom.treat_48002_as_ai_eligible`（二次认证 + 危险提示 + 强制审计）、`wecom.service_state_map`、`server.public_base_url`；写回 `config.json` 并热加载，无需重启；密钥类字段仍只显示环境变量名（#25）。
