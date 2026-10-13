@@ -237,13 +237,22 @@ func (g *Gateway) wire(ctx context.Context, cfg Config, logger Logger) error {
 		})
 		return nil
 	}
-	hcfg := HandoverConfig{Phrase: cfg.WeCom.HandoverPhrase, Welcome: cfg.WeCom.HandoverWelcome, Scripts: cfg.WeCom.HandoverScripts}
-	g.Delivery.HandoverPhrase = hcfg.phrase()
+	// Phrase match string is static (not editable via SaveSettings). Welcome/Scripts
+	// must be read from liveCfg on each hit so SaveSettings hot-reload applies to
+	// the 口令 path the same way ApplyEditableSettings updates the button path.
+	g.Delivery.HandoverPhrase = HandoverConfig{Phrase: cfg.WeCom.HandoverPhrase}.phrase()
 	g.Delivery.OnHandoverPhrase = func(ctx context.Context, c state.Customer, m state.InboxMessage) error {
 		vb, ok := g.vbs[m.BindingID]
 		if !ok {
 			vb = bridge.Binding{ID: m.BindingID}
 		}
+		g.cfgMu.RLock()
+		hcfg := HandoverConfig{
+			Phrase:  g.liveCfg.WeCom.HandoverPhrase,
+			Welcome: g.liveCfg.WeCom.HandoverWelcome,
+			Scripts: g.liveCfg.WeCom.HandoverScripts,
+		}
+		g.cfgMu.RUnlock()
 		return RequestHumanHandover(ctx, st, adapter, vb, c, hcfg, "phrase_handover")
 	}
 	g.Sync.OnSynced = g.Delivery.Kick
