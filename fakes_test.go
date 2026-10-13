@@ -18,20 +18,22 @@ import (
 
 // fakeAdapter is test-only; production code has no always-succeeding adapter.
 type fakeAdapter struct {
-	mu         sync.Mutex
-	name       string
-	userErr    error
-	svcState   string
-	svcErr     error
-	transErr   error
-	transCalls []int
-	eventCalls []string
-	eventErr   error
-	sendErrAt  int // 1-based chunk that fails; 0 = never
-	sendErr    error
-	sends      []SendRequest
-	media      map[string]MediaDownload
-	mediaErr   error
+	mu             sync.Mutex
+	name           string
+	userErr        error
+	svcState       string
+	svcErr         error
+	svcSeq         []any // optional per-call override: string state or error
+	transErr       error
+	transNoPromote bool // Trans succeeds but does not flip svcState (reread tests)
+	transCalls     []int
+	eventCalls     []string
+	eventErr       error
+	sendErrAt      int // 1-based chunk that fails; 0 = never
+	sendErr        error
+	sends          []SendRequest
+	media          map[string]MediaDownload
+	mediaErr       error
 }
 
 func (a *fakeAdapter) GetUser(_ context.Context, _ Binding, c Customer) (Customer, error) {
@@ -44,6 +46,14 @@ func (a *fakeAdapter) GetUser(_ context.Context, _ Binding, c Customer) (Custome
 func (a *fakeAdapter) ServiceState(context.Context, Binding, Customer) (string, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if len(a.svcSeq) > 0 {
+		v := a.svcSeq[0]
+		a.svcSeq = a.svcSeq[1:]
+		if err, ok := v.(error); ok {
+			return "", err
+		}
+		return v.(string), nil
+	}
 	if a.svcErr != nil {
 		return "", a.svcErr
 	}
@@ -58,6 +68,9 @@ func (a *fakeAdapter) TransServiceState(_ context.Context, _ Binding, _ Customer
 	a.transCalls = append(a.transCalls, officialState)
 	if a.transErr != nil {
 		return "", a.transErr
+	}
+	if a.transNoPromote {
+		return "msg-code-test", nil
 	}
 	// Successful force-trans to AI updates the fake official view.
 	if officialState == OfficialStateAI {
