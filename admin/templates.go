@@ -69,7 +69,8 @@ const layout = `{{define "form"}}<input type="hidden" name="csrf_token" value="{
 <p>project_id <input name="project_id" value="{{.Config.ProjectID}}" required>
 virtual_corp_id <input name="virtual_corp_id" value="{{.Config.VirtualCorpID}}" required>
 agent_id <input name="agent_id" value="{{.Config.AgentID}}" required>
-callback_url <input name="callback_url" value="{{.Config.CallbackURL}}" size="40" required></p>
+callback_url <input name="callback_url" value="{{.Config.CallbackURL}}" size="40" required>
+servicer_userid <input name="servicer_userid" value="{{.Config.ServicerUserID}}" placeholder="如 WenHaiYan（WAITING 恢复 2→3→4 必填）"></p>
 <p><label><input type="checkbox" name="disabled" value="1" {{if .Config.Disabled}}checked{{end}}> disabled（写入配置并热加载；与上方启用/停用并存时，保存配置后以本项为准）</label></p>
 <p>密钥 env（只读）：secret=<code>{{.Config.VirtualSecretEnv}}</code> token=<code>{{.Config.CallbackTokenEnv}}</code> aes=<code>{{.Config.CallbackAESKeyEnv}}</code> credential_revision=<code>{{.Config.CredentialRevision}}</code></p>
 <button>保存配置（需二次认证）</button></form></div>

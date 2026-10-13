@@ -42,10 +42,16 @@ func (a *handoverFakeAdapter) ServiceState(context.Context, bridge.Binding, brid
 	}
 	return a.svc, nil
 }
-func (a *handoverFakeAdapter) TransServiceState(_ context.Context, _ bridge.Binding, _ bridge.Customer, st int) (string, error) {
+func (a *handoverFakeAdapter) TransServiceState(_ context.Context, _ bridge.Binding, _ bridge.Customer, st int, _ string) (string, error) {
 	a.trans = append(a.trans, st)
 	if st == bridge.OfficialStateWaiting {
 		a.svc = state.CustomerWaitingHuman
+	}
+	if st == bridge.OfficialStateHuman {
+		a.svc = state.CustomerHuman
+	}
+	if st == bridge.OfficialStateClosed {
+		a.svc = state.CustomerClosed
 	}
 	if st == bridge.OfficialStateAI {
 		a.svc = state.CustomerAIEligible
@@ -262,7 +268,7 @@ type handoverFailTransAdapter struct {
 	err error
 }
 
-func (a *handoverFailTransAdapter) TransServiceState(context.Context, bridge.Binding, bridge.Customer, int) (string, error) {
+func (a *handoverFailTransAdapter) TransServiceState(context.Context, bridge.Binding, bridge.Customer, int, string) (string, error) {
 	return "", a.err
 }
 func (a *handoverFailTransAdapter) SendMsgOnEvent(context.Context, bridge.Binding, string, string) error {

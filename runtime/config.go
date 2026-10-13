@@ -166,6 +166,9 @@ type BindingConfig struct {
 	CallbackURL        string `json:"callback_url"`
 	CredentialRevision int64  `json:"credential_revision"`
 	Disabled           bool   `json:"disabled"`
+	// ServicerUserID is the WeCom userid used for WAITING recover 2→3→4
+	// (example: WenHaiYan). Empty → admin/inbound force-end fails 未配置接待人.
+	ServicerUserID string `json:"servicer_userid"`
 }
 
 // LoadConfig reads and validates a config file. Unknown fields are errors.

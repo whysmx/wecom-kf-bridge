@@ -42,6 +42,9 @@ type Binding struct {
 	CallbackAESKey string
 	Enabled        bool
 	Revision       int64
+	// ServicerUserID is bindings[].servicer_userid from config; required to
+	// end WAITING via 2→3→4. Empty → recover/force-end fails 未配置接待人.
+	ServicerUserID string
 }
 
 // Customer is the protocol view of a durable state.Customer.
@@ -126,7 +129,8 @@ type Adapter interface {
 	// TransServiceState calls kf/service_state/trans and returns msg_code
 	// (empty when the target state does not issue one). state is the
 	// official integer (1 AI / 2 waiting / 3 human / 4 closed).
-	TransServiceState(ctx context.Context, b Binding, c Customer, officialState int) (msgCode string, err error)
+	// servicerUserID is required for →3 (HUMAN); omit (empty) for →1/→2/→4.
+	TransServiceState(ctx context.Context, b Binding, c Customer, officialState int, servicerUserID string) (msgCode string, err error)
 	// SendMsgOnEvent sends a one-shot event response (welcome/queue/end).
 	SendMsgOnEvent(ctx context.Context, b Binding, msgCode, text string) error
 	// SendText sends one chunk and returns the upstream msgid.
@@ -166,7 +170,7 @@ func (unavailableAdapter) GetUser(_ context.Context, _ Binding, c Customer) (Cus
 func (unavailableAdapter) ServiceState(context.Context, Binding, Customer) (string, error) {
 	return "", errNoAdapter
 }
-func (unavailableAdapter) TransServiceState(context.Context, Binding, Customer, int) (string, error) {
+func (unavailableAdapter) TransServiceState(context.Context, Binding, Customer, int, string) (string, error) {
 	return "", errNoAdapter
 }
 func (unavailableAdapter) SendMsgOnEvent(context.Context, Binding, string, string) error {
@@ -657,9 +661,9 @@ func (s *Server) ensureAIEligibleForSend(ctx context.Context, b Binding, sc stat
 	return sc, nil
 }
 
-// forceEndHumanSession ends official WAITING/HUMAN via trans→4 (CLOSED).
-// WeCom rejects 2→1 / 3→1 with 95016; never call OfficialStateAI here.
-// Does not delete servicers. Callers must fail-closed for the current op.
+// forceEndHumanSession ends official WAITING/HUMAN.
+// WAITING(2): fixed 2→3(servicer required)→4; no servicer → fail with 未配置接待人 (never 2→4).
+// HUMAN(3): only →4. WeCom rejects 2→1 / 3→1 (95016); never call OfficialStateAI.
 func (s *Server) forceEndHumanSession(ctx context.Context, b Binding, sc state.Customer, fromMapped string) error {
 	c := customerFrom(sc)
 	s.cfg.Logger.Log("handover_force_end", map[string]any{
@@ -667,10 +671,9 @@ func (s *Server) forceEndHumanSession(ctx context.Context, b Binding, sc state.C
 		"customer_id":            sc.ID,
 		"from_mapped":            fromMapped,
 		"external_userid_prefix": TruncateID(sc.ExternalUserID, 8),
-		"target":                 OfficialStateClosed,
-		"note":                   "wecom_forbids_2_3_to_1",
+		"note":                   "waiting_via_3_then_4",
 	})
-	_, err := s.cfg.Adapter.TransServiceState(ctx, b, c, OfficialStateClosed)
+	err := EndOfficialHumanSession(ctx, s.cfg.Adapter, b, c, fromMapped)
 	if err != nil {
 		s.cfg.Logger.Log("handover_force_end_failed", map[string]any{
 			"binding_id":             b.ID,
@@ -679,6 +682,9 @@ func (s *Server) forceEndHumanSession(ctx context.Context, b Binding, sc state.C
 			"external_userid_prefix": TruncateID(sc.ExternalUserID, 8),
 			"error":                  err.Error(),
 		})
+		if strings.Contains(err.Error(), "未配置接待人") {
+			return errAPI{ErrCodeUnavailable, err.Error(), http.StatusServiceUnavailable}
+		}
 		var se *SendError
 		if errors.As(err, &se) && se.Kind == SendRejected {
 			return errAPI{ErrCodePlatform, "force end session rejected", http.StatusBadGateway}
@@ -702,6 +708,23 @@ func (s *Server) forceEndHumanSession(ctx context.Context, b Binding, sc state.C
 		"binding_id": b.ID, "customer_id": sc.ID, "from_mapped": fromMapped,
 	})
 	return nil
+}
+
+// EndOfficialHumanSession ends WAITING via 2→3(servicer_userid)→4 or HUMAN via →4.
+// Servicer comes from b.ServicerUserID (bindings[].servicer_userid). Empty →
+// error containing 未配置接待人 and must not call 2→4 (冒烟 95016).
+func EndOfficialHumanSession(ctx context.Context, ad Adapter, b Binding, c Customer, fromMapped string) error {
+	if fromMapped == state.CustomerWaitingHuman {
+		sid := strings.TrimSpace(b.ServicerUserID)
+		if sid == "" {
+			return errors.New("未配置接待人")
+		}
+		if _, err := ad.TransServiceState(ctx, b, c, OfficialStateHuman, sid); err != nil {
+			return err
+		}
+	}
+	_, err := ad.TransServiceState(ctx, b, c, OfficialStateClosed, "")
+	return err
 }
 
 // sendAborted handles a send whose preconditions stopped holding between

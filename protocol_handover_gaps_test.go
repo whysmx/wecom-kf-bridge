@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"net/http"
 	"testing"
 
 	"github.com/whysmx/wecom-kf-bridge/state"
@@ -40,8 +41,25 @@ func TestSendForceEndFromWaitingHumanFailClosed(t *testing.T) {
 	if after.FenceSource != state.FenceAuto || after.Generation != before.Generation {
 		t.Fatalf("%+v gen %d→%d", after, before.Generation, after.Generation)
 	}
-	if got := e.ad.transed(); len(got) != 1 || got[0] != OfficialStateClosed {
-		t.Fatalf("trans %v want →4", got)
+	if got := e.ad.transed(); len(got) != 2 || got[0] != OfficialStateHuman || got[1] != OfficialStateClosed {
+		t.Fatalf("WAITING trans %v want →3 then →4", got)
+	}
+	if len(e.ad.sent()) != 0 {
+		t.Fatal("sent")
+	}
+}
+
+// WAITING without bindings[].servicer_userid → fail 未配置接待人, never 2→4.
+func TestSendForceEndWaitingWithoutServicer(t *testing.T) {
+	e := newEnv(t, func(c *Config) { c.Bindings[0].ServicerUserID = "" })
+	tok := e.token()
+	_ = e.st.SetHandoverStatus(context.Background(), e.cust.ID, state.CustomerWaitingHuman, "service_state_precheck")
+	e.ad.svcState = state.CustomerWaitingHuman
+	if code, v := e.send(tok, e.cust.UID, "text", "from-waiting"); code != http.StatusServiceUnavailable {
+		t.Fatalf("want 503 without servicer: %d %v", code, v)
+	}
+	if got := e.ad.transed(); len(got) != 0 {
+		t.Fatalf("must not call 2→4 when servicer missing: %v", got)
 	}
 	if len(e.ad.sent()) != 0 {
 		t.Fatal("sent")

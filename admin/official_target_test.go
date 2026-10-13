@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 	"strings"
@@ -170,6 +171,10 @@ func TestRecoverTransferUsesOfficialClosed4NotAI(t *testing.T) {
 	if nc.OfficialStatus != state.CustomerClosed {
 		t.Fatalf("recover official=%s; want CLOSED", nc.OfficialStatus)
 	}
+	// After handover official is WAITING(2): recover must 2→3(servicer)→4.
+	if e.kf.count("trans:ext-secret-id:3:WenHaiYan") == 0 {
+		t.Fatalf("WAITING recover must trans→3 with servicer: %v", e.kf.calls)
+	}
 	if e.kf.count("trans:ext-secret-id:4") == 0 {
 		t.Fatalf("recover must trans→4 (CLOSED), not →1: %v", e.kf.calls)
 	}
@@ -201,5 +206,66 @@ func TestHandoverTransferRejectsWhenOnlyIllegalZeroMapped(t *testing.T) {
 	}
 	if w := cl.post("/admin/customers/"+e.cust.ID+"/handover", rev(t, e)); w.Code == http.StatusInternalServerError {
 		t.Fatal("unexpected 500")
+	}
+}
+
+// WAITING recover without bindings[].servicer_userid fails with 未配置接待人 and never calls 2→4.
+func TestRecoverWaitingWithoutServicerFails(t *testing.T) {
+	e := newEnv(t)
+	e.rt.configBindings[0].ServicerUserID = ""
+	cl := e.login()
+	path := "/admin/customers/" + e.cust.ID
+	cl.post(path+"/handover", rev(t, e))
+	cu := mustCustomer(t, e)
+	beforeCalls := len(e.kf.calls)
+	cl.post(path+"/recover", url.Values{"revision": {itoa64(cu.Revision)}})
+	if !strings.Contains(cl.flash(), "未配置接待人") {
+		t.Fatalf("flash want 未配置接待人, got %q", cl.flash())
+	}
+	nc := mustCustomer(t, e)
+	if nc.State != state.CustomerHuman || nc.Generation != cu.Generation {
+		t.Fatalf("must not local-recover without servicer: %+v", nc)
+	}
+	for _, c := range e.kf.calls[beforeCalls:] {
+		if strings.HasPrefix(c, "trans:ext-secret-id:4") || strings.HasPrefix(c, "trans:ext-secret-id:3") {
+			t.Fatalf("must not trans 2→3/2→4 when servicer missing: %v", e.kf.calls[beforeCalls:])
+		}
+	}
+}
+
+// Official HUMAN recover still only →4 (no →3).
+func TestRecoverHumanOnlyTransClosed(t *testing.T) {
+	e := newEnv(t)
+	cl := e.login()
+	path := "/admin/customers/" + e.cust.ID
+	cl.post(path+"/handover", rev(t, e))
+	// Simulate official already HUMAN(3).
+	e.kf.states["ext-secret-id"] = 3
+	cu := mustCustomer(t, e)
+	_ = e.st.SetOfficialStatus(context.Background(), cu.ID, state.CustomerHuman)
+	cu = mustCustomer(t, e)
+	before := append([]string(nil), e.kf.calls...)
+	cl.post(path+"/recover", url.Values{"revision": {itoa64(cu.Revision)}})
+	nc := mustCustomer(t, e)
+	if nc.State != state.CustomerAIEligible || nc.OfficialStatus != state.CustomerClosed {
+		t.Fatalf("HUMAN recover flash=%q cust=%+v", cl.flash(), nc)
+	}
+	var after []string
+	for _, c := range e.kf.calls[len(before):] {
+		after = append(after, c)
+	}
+	for _, c := range after {
+		if strings.Contains(c, ":3:") {
+			t.Fatalf("HUMAN must not trans→3: %v", after)
+		}
+	}
+	ok4 := false
+	for _, c := range after {
+		if c == "trans:ext-secret-id:4" {
+			ok4 = true
+		}
+	}
+	if !ok4 {
+		t.Fatalf("HUMAN recover must →4: %v", after)
 	}
 }
