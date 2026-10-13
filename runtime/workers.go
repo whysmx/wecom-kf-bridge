@@ -187,7 +187,7 @@ type DeliveryWorker struct {
 	// automatically fenced customer; nil disables automatic recovery and
 	// inbound force-pullback to AI.
 	OfficialState func(ctx context.Context, bindingID string, c state.Customer) (string, error)
-	// ForceTransToAI forces official session to AI (1) and re-confirms.
+	// ForceTransToAI ends official 2/3→4 (never →1); returns err to fail-closed.
 	// Nil disables inbound force-pullback (send path has its own copy).
 	ForceTransToAI func(ctx context.Context, bindingID string, c state.Customer, fromMapped string) error
 	// HandoverPhrase exact-match (trim) triggers intentional human handoff.
@@ -272,12 +272,12 @@ func (d *DeliveryWorker) DeliverOnce(ctx context.Context) {
 	wg.Wait()
 }
 
-// pullBackOfficialHumanIfNeeded: architecture §2 — on inbound, if there is
-// no manual handoff intent but official state is WAITING_HUMAN/HUMAN,
-// force trans→1 (same as send ensureAIEligibleForSend), clear an auto fence
-// in place (no generation bump), then continue toward AI delivery.
+// pullBackOfficialHumanIfNeeded: on inbound, if there is no manual handoff
+// intent but official state is WAITING_HUMAN/HUMAN, end→4 via ForceTransToAI
+// (WeCom forbids 2/3→1). The hook fail-closes after ending so this message
+// stays HELD; AI resumes after customer re-entry (official 0).
 // Manual fences are never pulled back. Hooks nil → no-op (tests/legacy).
-// Returns ok=false to HELD fail-closed when force-trans/clear fails.
+// Returns ok=false to HELD fail-closed when end/clear fails.
 func (d *DeliveryWorker) pullBackOfficialHumanIfNeeded(ctx context.Context, c state.Customer, m state.InboxMessage) (state.Customer, bool) {
 	if c.FenceSource == state.FenceManual {
 		return c, true

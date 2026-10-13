@@ -200,20 +200,21 @@ func (g *Gateway) wire(ctx context.Context, cfg Config, logger Logger) error {
 	g.Delivery.OfficialState = func(ctx context.Context, bindingID string, c state.Customer) (string, error) {
 		return adapter.ServiceState(ctx, bridge.Binding{ID: bindingID}, bridge.Customer{ExternalUserID: c.ExternalUserID})
 	}
-	// Inbound force-pullback mirrors protocol.forceTransToAI (trans→1 + re-read).
+	// Inbound: WeCom forbids 2/3→1. End→4 then fail-closed (hook returns err
+	// so pullBack does not deliver as AI); customer re-entry (0) unlocks later.
 	g.Delivery.ForceTransToAI = func(ctx context.Context, bindingID string, c state.Customer, fromMapped string) error {
 		b := bridge.Binding{ID: bindingID}
 		if vb, ok := g.vbs[bindingID]; ok {
 			b = vb
 		}
 		cust := bridge.Customer{ID: c.ID, BindingID: c.BindingID, ExternalUserID: c.ExternalUserID, UserID: c.UID}
-		logger.Log("handover_force_trans_ai", map[string]any{
+		logger.Log("handover_force_end", map[string]any{
 			"binding_id": bindingID, "customer_id": c.ID, "from_mapped": fromMapped,
-			"external_userid_prefix": bridge.TruncateID(c.ExternalUserID, 8), "target": bridge.OfficialStateAI,
-			"path": "inbound",
+			"external_userid_prefix": bridge.TruncateID(c.ExternalUserID, 8), "target": bridge.OfficialStateClosed,
+			"path": "inbound", "note": "wecom_forbids_2_3_to_1",
 		})
-		if _, err := adapter.TransServiceState(ctx, b, cust, bridge.OfficialStateAI); err != nil {
-			logger.Log("handover_force_trans_ai_failed", map[string]any{
+		if _, err := adapter.TransServiceState(ctx, b, cust, bridge.OfficialStateClosed); err != nil {
+			logger.Log("handover_force_end_failed", map[string]any{
 				"binding_id": bindingID, "customer_id": c.ID, "from_mapped": fromMapped,
 				"external_userid_prefix": bridge.TruncateID(c.ExternalUserID, 8), "error": err.Error(), "path": "inbound",
 			})
@@ -221,21 +222,22 @@ func (g *Gateway) wire(ctx context.Context, cfg Config, logger Logger) error {
 		}
 		got, err := adapter.ServiceState(ctx, b, cust)
 		if err != nil {
-			logger.Log("handover_force_trans_ai_reread_failed", map[string]any{
+			logger.Log("handover_force_end_reread_failed", map[string]any{
 				"binding_id": bindingID, "customer_id": c.ID, "error": err.Error(), "path": "inbound",
 			})
 			return err
 		}
-		if got != state.CustomerAIEligible && got != state.CustomerAIEligibleBypass48002 {
-			logger.Log("handover_force_trans_ai_not_confirmed", map[string]any{
+		if got != state.CustomerClosed {
+			logger.Log("handover_force_end_not_confirmed", map[string]any{
 				"binding_id": bindingID, "customer_id": c.ID, "got": got, "from_mapped": fromMapped, "path": "inbound",
 			})
-			return fmt.Errorf("force trans not confirmed as AI: %s", got)
+			return fmt.Errorf("force end not confirmed as CLOSED: %s", got)
 		}
-		logger.Log("handover_force_trans_ai_ok", map[string]any{
+		logger.Log("handover_force_end_ok", map[string]any{
 			"binding_id": bindingID, "customer_id": c.ID, "from_mapped": fromMapped, "path": "inbound",
 		})
-		return nil
+		// Ended OK — still fail-closed so this inbound is not delivered as AI.
+		return fmt.Errorf("official session ended; wait for customer re-entry")
 	}
 	// Phrase match string is static (not editable via SaveSettings). Welcome/Scripts
 	// must be read from liveCfg on each hit so SaveSettings hot-reload applies to

@@ -8,31 +8,28 @@ import (
 	"github.com/whysmx/wecom-kf-bridge/state"
 )
 
-// No manual fence + official HUMAN/WAITING → Trans(1), message sent, no manual fence.
-func TestSendForceTransToAIWithoutManualIntent(t *testing.T) {
+// No manual fence + official HUMAN/WAITING → Trans(4) end, fail-closed (no send).
+// WeCom forbids 2→1 / 3→1 (95016); AI resumes only after customer re-entry.
+func TestSendForceEndWithoutManualIntent(t *testing.T) {
 	for _, official := range []string{state.CustomerHuman, state.CustomerWaitingHuman} {
 		t.Run(official, func(t *testing.T) {
 			e := newEnv(t)
 			tok := e.token()
 			e.ad.svcState = official
-			if code, v := e.send(tok, e.cust.UID, "text", "ai-reply"); code != 200 || errcode(v) != 0 {
+			if code, v := e.send(tok, e.cust.UID, "text", "ai-reply"); code != 403 || errcode(v) != ErrCodeDisabled {
 				t.Fatalf("send: %d %v", code, v)
 			}
-			if got := e.ad.transed(); len(got) != 1 || got[0] != OfficialStateAI {
-				t.Fatalf("trans calls %v", got)
+			if got := e.ad.transed(); len(got) != 1 || got[0] != OfficialStateClosed {
+				t.Fatalf("trans calls %v want →4", got)
 			}
-			if len(e.ad.sent()) != 1 {
-				t.Fatalf("sends %d", len(e.ad.sent()))
-			}
-			c, _ := e.st.Customer(context.Background(), e.cust.ID)
-			if c.FenceSource == state.FenceManual || c.State != state.CustomerAIEligible {
-				t.Fatalf("state %s/%s", c.State, c.FenceSource)
+			if len(e.ad.sent()) != 0 {
+				t.Fatalf("must not send after end→4: %d", len(e.ad.sent()))
 			}
 		})
 	}
 }
 
-// Manual BeginHandover → keep 70004, never force Trans→1.
+// Manual BeginHandover → keep 70004, never force Trans→4.
 func TestSendManualHandoverBlocksWithoutForceTrans(t *testing.T) {
 	e := newEnv(t)
 	tok := e.token()
@@ -51,8 +48,8 @@ func TestSendManualHandoverBlocksWithoutForceTrans(t *testing.T) {
 	}
 }
 
-// Force-trans failure fails closed (503), does not send.
-func TestSendForceTransFailureFailClosed(t *testing.T) {
+// Force-end failure fails closed (503), does not send.
+func TestSendForceEndFailureFailClosed(t *testing.T) {
 	e := newEnv(t)
 	tok := e.token()
 	e.ad.svcState = state.CustomerHuman
@@ -61,12 +58,12 @@ func TestSendForceTransFailureFailClosed(t *testing.T) {
 		t.Fatalf("fail closed: %d %v", code, v)
 	}
 	if len(e.ad.sent()) != 0 {
-		t.Fatal("sent after failed force-trans")
+		t.Fatal("sent after failed force-end")
 	}
 }
 
-// Auto fence + official HUMAN → force-trans, clear auto fence in place, send.
-func TestSendForceTransClearsAutoFenceInPlace(t *testing.T) {
+// Auto fence + official HUMAN → end→4, fail-closed (fence kept; no send as AI).
+func TestSendForceEndFromAutoFenceFailClosed(t *testing.T) {
 	e := newEnv(t)
 	tok := e.token()
 	_ = e.st.SetHandoverStatus(context.Background(), e.cust.ID, state.CustomerHuman, "service_state_precheck")
@@ -75,23 +72,23 @@ func TestSendForceTransClearsAutoFenceInPlace(t *testing.T) {
 		t.Fatal(before.FenceSource)
 	}
 	e.ad.svcState = state.CustomerHuman
-	if code, v := e.send(tok, e.cust.UID, "text", "after-pullback"); code != 200 {
+	if code, v := e.send(tok, e.cust.UID, "text", "after-end"); code != 403 || errcode(v) != ErrCodeDisabled {
 		t.Fatalf("%d %v", code, v)
 	}
 	after, _ := e.st.Customer(context.Background(), e.cust.ID)
-	if after.State != state.CustomerAIEligible || after.FenceSource != "" {
-		t.Fatalf("%s/%s", after.State, after.FenceSource)
+	if after.FenceSource != state.FenceAuto {
+		t.Fatalf("auto fence should remain until re-entry: %s/%s", after.State, after.FenceSource)
 	}
-	if after.Generation != before.Generation || after.UID != before.UID {
-		t.Fatalf("generation/UID must stay: before=%d/%s after=%d/%s", before.Generation, before.UID, after.Generation, after.UID)
+	if got := e.ad.transed(); len(got) != 1 || got[0] != OfficialStateClosed {
+		t.Fatalf("trans %v want →4", got)
 	}
-	if got := e.ad.transed(); len(got) != 1 || got[0] != OfficialStateAI {
-		t.Fatalf("trans %v", got)
+	if len(e.ad.sent()) != 0 {
+		t.Fatal("sent")
 	}
 }
 
-// Force-trans rejected by platform → 502 ErrCodePlatform.
-func TestSendForceTransRejected(t *testing.T) {
+// Force-end rejected by platform → 502 ErrCodePlatform.
+func TestSendForceEndRejected(t *testing.T) {
 	e := newEnv(t)
 	tok := e.token()
 	e.ad.svcState = state.CustomerHuman
@@ -105,7 +102,7 @@ func TestSendForceTransRejected(t *testing.T) {
 }
 
 // Trans OK but reread fails → 503 fail-closed.
-func TestSendForceTransRereadFailure(t *testing.T) {
+func TestSendForceEndRereadFailure(t *testing.T) {
 	e := newEnv(t)
 	tok := e.token()
 	e.ad.svcSeq = []any{state.CustomerHuman, errBoom}
@@ -113,7 +110,7 @@ func TestSendForceTransRereadFailure(t *testing.T) {
 	if code, v := e.send(tok, e.cust.UID, "text", "x"); code != http.StatusServiceUnavailable || errcode(v) != ErrCodeUnavailable {
 		t.Fatalf("reread fail: %d %v", code, v)
 	}
-	if got := e.ad.transed(); len(got) != 1 {
+	if got := e.ad.transed(); len(got) != 1 || got[0] != OfficialStateClosed {
 		t.Fatalf("trans %v", got)
 	}
 	if len(e.ad.sent()) != 0 {
@@ -121,8 +118,8 @@ func TestSendForceTransRereadFailure(t *testing.T) {
 	}
 }
 
-// Trans OK but reread still HUMAN → 503 not confirmed.
-func TestSendForceTransNotConfirmed(t *testing.T) {
+// Trans OK but reread still HUMAN → 503 not confirmed CLOSED.
+func TestSendForceEndNotConfirmed(t *testing.T) {
 	e := newEnv(t)
 	tok := e.token()
 	e.ad.svcState = state.CustomerHuman
@@ -161,8 +158,8 @@ func TestUnavailableAdapterHandoverMethods(t *testing.T) {
 	}
 }
 
-// ensureAIEligible force-trans fails while local auto-fenced.
-func TestEnsureAIEligibleForceTransFails(t *testing.T) {
+// ensureAIEligible force-end fails while local auto-fenced.
+func TestEnsureAIEligibleForceEndFails(t *testing.T) {
 	e := newEnv(t)
 	tok := e.token()
 	_ = e.st.SetHandoverStatus(context.Background(), e.cust.ID, state.CustomerHuman, "service_state_precheck")
@@ -173,19 +170,19 @@ func TestEnsureAIEligibleForceTransFails(t *testing.T) {
 	}
 }
 
-// ensureAIEligible: ClearAutoFenceInPlace fails after successful force-trans.
+// ensureAIEligible: official AI + auto fence → clear in place; clear failure → 503.
 func TestEnsureAIEligibleClearFenceFails(t *testing.T) {
 	e := newEnv(t)
 	tok := e.token()
 	_ = e.st.SetHandoverStatus(context.Background(), e.cust.ID, state.CustomerHuman, "service_state_precheck")
-	e.ad.svcState = state.CustomerHuman
+	e.ad.svcState = state.CustomerAIEligible
 	e.st.DB().Exec(`CREATE TRIGGER caf_send BEFORE UPDATE OF state ON customers BEGIN SELECT RAISE(ABORT,'x'); END`)
 	if code, v := e.send(tok, e.cust.UID, "text", "x"); code != http.StatusServiceUnavailable {
 		t.Fatalf("%d %v", code, v)
 	}
 }
 
-// ensureAIEligible: official not 2/3 while auto-fenced → held (no force-trans).
+// ensureAIEligible: official CLOSED while auto-fenced → held (no force-end).
 func TestEnsureAIEligibleNonHumanOfficialHeld(t *testing.T) {
 	e := newEnv(t)
 	tok := e.token()

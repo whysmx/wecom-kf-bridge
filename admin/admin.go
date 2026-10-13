@@ -79,7 +79,7 @@ type EditableSettings struct {
 	Treat48002AsAIEligible bool
 	ServiceStateMap        map[string]string // official int as string → internal state
 	PublicBaseURL          string
-	// Transfer scripts for send_msg_on_event (queue wired; human/end config-only this PR).
+	// Transfer scripts for send_msg_on_event (queue on trans→2; end on recover→4).
 	HandoverQueueScript string
 	HandoverHumanScript string
 	HandoverEndScript   string
@@ -137,11 +137,13 @@ type Config struct {
 	CorpID       string
 	Settings     []Setting
 	// ServiceStateMap maps official service_state values to internal states
-	// (wecom.service_state_map). Handover transfers to the value mapped to
-	// WAITING_HUMAN, recovery to AI_ELIGIBLE.
+	// (wecom.service_state_map). Handover transfers to WAITING_HUMAN;
+	// recover ends to CLOSED (4) then restores local AI (WeCom forbids 2/3→1).
 	ServiceStateMap map[int]string
-	// HandoverWelcome is sent via send_msg_on_event after admin/phrase trans.
+	// HandoverWelcome is sent via send_msg_on_event after admin/phrase trans→2.
 	HandoverWelcome string
+	// HandoverEndScript is sent via send_msg_on_event after admin recover trans→4.
+	HandoverEndScript string
 	// GatewayBaseURL is the public base URL cc-connect uses as api_base_url
 	// (server.public_base_url). Empty exports a placeholder to fill in.
 	GatewayBaseURL string
@@ -387,6 +389,7 @@ func (c *Console) ApplyEditableSettings(s EditableSettings) {
 	if q := strings.TrimSpace(s.HandoverQueueScript); q != "" {
 		c.cfg.HandoverWelcome = q
 	}
+	c.cfg.HandoverEndScript = strings.TrimSpace(s.HandoverEndScript)
 	// Refresh displayed rows that mirror editable fields; keep secret env names.
 	out := make([]Setting, 0, len(c.cfg.Settings)+6)
 	for _, row := range c.cfg.Settings {

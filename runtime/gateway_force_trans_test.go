@@ -6,12 +6,13 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/whysmx/wecom-kf-bridge/state"
 )
 
-// Exercises the ForceTransToAI / OnHandoverPhrase closures wired in Build.
+// Exercises the ForceTransToAI (end→4) / OnHandoverPhrase closures wired in Build.
 func TestGatewayForceTransToAIClosure(t *testing.T) {
 	fw := &fakeWeCom{}
 	wx := httptest.NewServer(fw.handler(t))
@@ -46,9 +47,16 @@ func TestGatewayForceTransToAIClosure(t *testing.T) {
 	c := state.Customer{ID: "cid", BindingID: "b1", ExternalUserID: "ext-ft", UID: "u1"}
 	ctx := context.Background()
 
-	// success path (get returns AI after trans)
-	if err := g.Delivery.ForceTransToAI(ctx, "b1", c, state.CustomerHuman); err != nil {
-		t.Fatal(err)
+	// end→4 success: get returns CLOSED; hook still fail-closes (re-entry required)
+	fw.mu.Lock()
+	fw.stateGet = `{"errcode":0,"service_state":4}`
+	fw.mu.Unlock()
+	err = g.Delivery.ForceTransToAI(ctx, "b1", c, state.CustomerHuman)
+	if err == nil {
+		t.Fatal("want fail-closed after end→4")
+	}
+	if !strings.Contains(err.Error(), "re-entry") {
+		t.Fatalf("want re-entry hint, got %v", err)
 	}
 
 	// trans rejected
@@ -59,7 +67,7 @@ func TestGatewayForceTransToAIClosure(t *testing.T) {
 		t.Fatal("want reject")
 	}
 
-	// trans OK but reread not AI
+	// trans OK but reread not CLOSED
 	fw.mu.Lock()
 	fw.transBody = `{"errcode":0,"msg_code":"mc"}`
 	fw.stateGet = `{"errcode":0,"service_state":3}`

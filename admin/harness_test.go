@@ -221,14 +221,14 @@ func newEnv(t *testing.T, mut ...func(*Config)) *env {
 	must(t, err)
 	hash, _ := bcrypt.GenerateFromPassword([]byte(password), bcrypt.MinCost)
 	e := &env{t: t, st: st, kf: &fakeKF{listErr: map[int]error{}, states: map[string]int{}}, rt: &fakeRuntime{editable: EditableSettings{
-		ServiceStateMap: map[string]string{"1": state.CustomerAIEligible, "2": state.CustomerWaitingHuman, "3": state.CustomerHuman},
+		ServiceStateMap: map[string]string{"1": state.CustomerAIEligible, "2": state.CustomerWaitingHuman, "3": state.CustomerHuman, "4": state.CustomerClosed},
 	}, configBindings: []EditableBindingConfig{{
 		ID: "b1", EnterpriseID: "e1", OpenKfID: "wk1", ProjectID: "p1", VirtualCorpID: "bridge_b1",
 		AgentID: "1000002", CallbackURL: "http://cc.internal:9000/wecom",
 		VirtualSecretEnv: "B1_SECRET", CallbackTokenEnv: "B1_TOKEN", CallbackAESKeyEnv: "B1_AES",
 	}}}, now: time.Unix(1_800_000_000, 0), cust: cu}
 	cfg := Config{Store: st, KF: e.kf, Runtime: e.rt, PasswordHash: hash, Origin: origin, EnterpriseID: "e1", CompanyName: "测试企业", CorpID: "ww1234567890", Clock: e.clock,
-		ServiceStateMap: map[int]string{1: state.CustomerAIEligible, 2: state.CustomerWaitingHuman, 3: state.CustomerHuman},
+		ServiceStateMap: map[int]string{1: state.CustomerAIEligible, 2: state.CustomerWaitingHuman, 3: state.CustomerHuman, 4: state.CustomerClosed},
 		Settings:        []Setting{{"企业", "Secret 环境变量", "WECOM_SECRET"}}}
 	for _, m := range mut {
 		m(&cfg)

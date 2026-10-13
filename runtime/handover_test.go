@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -94,8 +95,8 @@ func TestRequestHumanHandoverSetsManualFence(t *testing.T) {
 	}
 }
 
-// Inbound: no manual intent + official 2/3 → Trans(1), message delivered.
-func TestInboundForceTransToAIWithoutManualIntent(t *testing.T) {
+// Inbound: no manual intent + official 2/3 → end→4, fail-closed HELD (WeCom forbids →1).
+func TestInboundForceEndWithoutManualIntent(t *testing.T) {
 	for _, official := range []string{state.CustomerHuman, state.CustomerWaitingHuman} {
 		t.Run(official, func(t *testing.T) {
 			st, c := unitStore(t)
@@ -112,9 +113,10 @@ func TestInboundForceTransToAIWithoutManualIntent(t *testing.T) {
 				HTTP: cc.Client(), MaxAttempts: 3, MaxConc: 1, Logger: nopRuntimeLogger{},
 				OfficialState: func(context.Context, string, state.Customer) (string, error) { return cur, nil },
 				ForceTransToAI: func(_ context.Context, _ string, _ state.Customer, from string) error {
-					trans = append(trans, bridge.OfficialStateAI)
-					cur = state.CustomerAIEligible
-					return nil
+					trans = append(trans, bridge.OfficialStateClosed)
+					cur = state.CustomerClosed
+					// Mirror production: end OK then fail-closed for this inbound.
+					return fmt.Errorf("official session ended; wait for customer re-entry")
 				},
 			}
 			// Auto fence as if a prior send saw official human (common after 加接待人).
@@ -132,17 +134,14 @@ func TestInboundForceTransToAIWithoutManualIntent(t *testing.T) {
 			d.DeliverOnce(ctx)
 			after, _ := st.Customer(ctx, c.ID)
 			m, _ := st.InboxByExternalID(ctx, "sc", "in-"+official)
-			if len(trans) != 1 || trans[0] != bridge.OfficialStateAI {
-				t.Fatalf("trans %v", trans)
+			if len(trans) != 1 || trans[0] != bridge.OfficialStateClosed {
+				t.Fatalf("trans %v want →4", trans)
 			}
-			if after.State != state.CustomerAIEligible || after.FenceSource != "" {
-				t.Fatalf("customer %+v", after)
+			if after.FenceSource != state.FenceAuto {
+				t.Fatalf("fence should remain until re-entry: %+v", after)
 			}
-			if after.Generation != before.Generation {
-				t.Fatalf("generation bumped: %d→%d", before.Generation, after.Generation)
-			}
-			if m.State == state.InboxHeld || atomic.LoadInt32(&posts) != 1 {
-				t.Fatalf("not delivered: state=%s posts=%d", m.State, posts)
+			if m.State != state.InboxHeld || atomic.LoadInt32(&posts) != 0 {
+				t.Fatalf("want HELD fail-closed: state=%s posts=%d", m.State, posts)
 			}
 		})
 	}
@@ -189,8 +188,8 @@ func TestInboundManualHandoverBlocksWithoutForceTrans(t *testing.T) {
 	}
 }
 
-// Inbound: local still AI-eligible (no fence) but official 3 → still Trans→1 then deliver.
-func TestInboundForceTransWhenLocalStillAIEligible(t *testing.T) {
+// Inbound: local still AI-eligible (no fence) but official 3 → end→4, HELD.
+func TestInboundForceEndWhenLocalStillAIEligible(t *testing.T) {
 	st, c := unitStore(t)
 	ctx := context.Background()
 	_ = st.SetCustomerAuthorized(ctx, c.ID, true)
@@ -205,9 +204,9 @@ func TestInboundForceTransWhenLocalStillAIEligible(t *testing.T) {
 		HTTP: cc.Client(), MaxAttempts: 3, MaxConc: 1, Logger: nopRuntimeLogger{},
 		OfficialState: func(context.Context, string, state.Customer) (string, error) { return cur, nil },
 		ForceTransToAI: func(_ context.Context, _ string, _ state.Customer, _ string) error {
-			trans = append(trans, bridge.OfficialStateAI)
-			cur = state.CustomerAIEligible
-			return nil
+			trans = append(trans, bridge.OfficialStateClosed)
+			cur = state.CustomerClosed
+			return fmt.Errorf("official session ended; wait for customer re-entry")
 		},
 	}
 	before, _ := st.Customer(ctx, c.ID)
@@ -222,11 +221,11 @@ func TestInboundForceTransWhenLocalStillAIEligible(t *testing.T) {
 	}
 	d.DeliverOnce(ctx)
 	m, _ := st.InboxByExternalID(ctx, "sc", "nofence")
-	if len(trans) != 1 {
-		t.Fatalf("trans %v", trans)
+	if len(trans) != 1 || trans[0] != bridge.OfficialStateClosed {
+		t.Fatalf("trans %v want →4", trans)
 	}
-	if m.State == state.InboxHeld || atomic.LoadInt32(&posts) != 1 {
-		t.Fatalf("state=%s posts=%d", m.State, posts)
+	if m.State != state.InboxHeld || atomic.LoadInt32(&posts) != 0 {
+		t.Fatalf("want HELD: state=%s posts=%d", m.State, posts)
 	}
 }
 
@@ -320,6 +319,7 @@ func TestInboundForceTransFailureHeld(t *testing.T) {
 	}
 }
 
+// Defensive: if ForceTrans hook returns nil while auto-fenced, clear failure still HELD.
 func TestInboundForceTransClearFenceFailureHeld(t *testing.T) {
 	st, c := unitStore(t)
 	ctx := context.Background()
@@ -483,7 +483,7 @@ func TestInboundOfficialStateErrorFailClosed(t *testing.T) {
 	}
 }
 
-// Compensated manual fence (AI state + manual) must not ForceTrans→1 and must HELD.
+// Compensated manual fence (AI state + manual) must not ForceTrans/end and must HELD.
 func TestInboundCompensatedManualFenceBlocksForceTrans(t *testing.T) {
 	st, c := unitStore(t)
 	ctx := context.Background()

@@ -546,11 +546,12 @@ func (g *Gateway) buildAdmin(cfg Config) (http.Handler, error) {
 	c, err := admin.New(admin.Config{
 		Store: g.Store, KF: consoleKF{client: g.adapter.clients[e.ID], tokens: g.adapter.tokens[e.ID]}, Runtime: consoleRuntime{g: g, cfg: cfg},
 		PasswordHash: []byte(hash), Origin: origin, EnterpriseID: e.ID, CompanyName: cfg.Admin.CompanyName, GatewayBaseURL: cfg.Server.PublicBaseURL, CorpID: e.CorpID, Settings: settings,
-		InsecureCookie:  cfg.Admin.InsecureCookie,
-		LanNoLogin:      cfg.Admin.LanNoLoginEnabled(),
-		ServiceStateMap: g.adapter.states,
-		HandoverWelcome: HandoverConfig{Welcome: cfg.WeCom.HandoverWelcome, Scripts: cfg.WeCom.HandoverScripts}.welcome(),
-		SessionTTL:      time.Duration(cfg.Admin.SessionTTLMinutes) * time.Minute, MaxSessions: cfg.Admin.MaxSessions,
+		InsecureCookie:    cfg.Admin.InsecureCookie,
+		LanNoLogin:        cfg.Admin.LanNoLoginEnabled(),
+		ServiceStateMap:   g.adapter.states,
+		HandoverWelcome:   HandoverConfig{Welcome: cfg.WeCom.HandoverWelcome, Scripts: cfg.WeCom.HandoverScripts}.welcome(),
+		HandoverEndScript: NormalizeHandoverScripts(cfg.WeCom.HandoverScripts, cfg.WeCom.HandoverWelcome).End,
+		SessionTTL:        time.Duration(cfg.Admin.SessionTTLMinutes) * time.Minute, MaxSessions: cfg.Admin.MaxSessions,
 	})
 	if err != nil {
 		return nil, err
