@@ -62,7 +62,7 @@ func (a *fakeAdapter) ServiceState(context.Context, Binding, Customer) (string, 
 	}
 	return a.svcState, nil
 }
-func (a *fakeAdapter) TransServiceState(_ context.Context, _ Binding, _ Customer, officialState int) (string, error) {
+func (a *fakeAdapter) TransServiceState(_ context.Context, _ Binding, _ Customer, officialState int, _ string) (string, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.transCalls = append(a.transCalls, officialState)
@@ -136,7 +136,7 @@ type env struct {
 
 func testBinding() Binding {
 	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32))
-	return Binding{ID: "b1", CorpID: "corp-1", CorpSecret: "secret-1", AgentID: "1002", CallbackToken: "callback-token", CallbackAESKey: strings.TrimSuffix(key, "="), Enabled: true, Revision: 1}
+	return Binding{ID: "b1", CorpID: "corp-1", CorpSecret: "secret-1", AgentID: "1002", CallbackToken: "callback-token", CallbackAESKey: strings.TrimSuffix(key, "="), Enabled: true, Revision: 1, ServicerUserID: "WenHaiYan"}
 }
 
 // newEnv uses a real SQLite store (docs/10: 真实 SQLite 事务).

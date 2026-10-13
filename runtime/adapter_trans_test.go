@@ -48,13 +48,13 @@ func TestAdapterTransServiceStateAndSendMsgOnEvent(t *testing.T) {
 	b := bridge.Binding{ID: "b1"}
 
 	// route error
-	if _, err := a.TransServiceState(ctx, bridge.Binding{ID: "nope"}, cust, bridge.OfficialStateAI); err == nil {
+	if _, err := a.TransServiceState(ctx, bridge.Binding{ID: "nope"}, cust, bridge.OfficialStateAI, ""); err == nil {
 		t.Fatal("route")
 	}
 
 	// API errcode → SendRejected
 	body = `{"errcode":48002,"errmsg":"forbidden"}`
-	_, err := a.TransServiceState(ctx, b, cust, bridge.OfficialStateAI)
+	_, err := a.TransServiceState(ctx, b, cust, bridge.OfficialStateAI, "")
 	if err == nil {
 		t.Fatal("errcode")
 	}
@@ -65,13 +65,13 @@ func TestAdapterTransServiceStateAndSendMsgOnEvent(t *testing.T) {
 
 	// call error (bad json)
 	body = `not-json`
-	if _, err := a.TransServiceState(ctx, b, cust, bridge.OfficialStateWaiting); err == nil {
+	if _, err := a.TransServiceState(ctx, b, cust, bridge.OfficialStateWaiting, ""); err == nil {
 		t.Fatal("bad json")
 	}
 
 	// success with msg_code
 	body = `{"errcode":0,"msg_code":"mc-1"}`
-	code, err := a.TransServiceState(ctx, b, cust, bridge.OfficialStateAI)
+	code, err := a.TransServiceState(ctx, b, cust, bridge.OfficialStateAI, "")
 	if err != nil || code != "mc-1" || hitTrans == 0 {
 		t.Fatalf("ok %q %v hit=%d", code, err, hitTrans)
 	}

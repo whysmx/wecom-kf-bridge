@@ -8,8 +8,8 @@ import (
 	"github.com/whysmx/wecom-kf-bridge/state"
 )
 
-// No manual fence + official HUMAN/WAITING → Trans(4) end, fail-closed (no send).
-// WeCom forbids 2→1 / 3→1 (95016); AI resumes only after customer re-entry.
+// No manual fence + official HUMAN/WAITING → end session, fail-closed (no send).
+// WAITING: 2→3(servicer)→4; HUMAN: →4. WeCom forbids 2→1 / 3→1 (95016).
 func TestSendForceEndWithoutManualIntent(t *testing.T) {
 	for _, official := range []string{state.CustomerHuman, state.CustomerWaitingHuman} {
 		t.Run(official, func(t *testing.T) {
@@ -19,8 +19,13 @@ func TestSendForceEndWithoutManualIntent(t *testing.T) {
 			if code, v := e.send(tok, e.cust.UID, "text", "ai-reply"); code != 403 || errcode(v) != ErrCodeDisabled {
 				t.Fatalf("send: %d %v", code, v)
 			}
-			if got := e.ad.transed(); len(got) != 1 || got[0] != OfficialStateClosed {
-				t.Fatalf("trans calls %v want →4", got)
+			got := e.ad.transed()
+			if official == state.CustomerWaitingHuman {
+				if len(got) != 2 || got[0] != OfficialStateHuman || got[1] != OfficialStateClosed {
+					t.Fatalf("WAITING trans %v want →3 then →4", got)
+				}
+			} else if len(got) != 1 || got[0] != OfficialStateClosed {
+				t.Fatalf("HUMAN trans %v want →4", got)
 			}
 			if len(e.ad.sent()) != 0 {
 				t.Fatalf("must not send after end→4: %d", len(e.ad.sent()))
@@ -150,7 +155,7 @@ func TestEnsureAIEligibleServiceStateError(t *testing.T) {
 func TestUnavailableAdapterHandoverMethods(t *testing.T) {
 	var a unavailableAdapter
 	ctx := context.Background()
-	if _, err := a.TransServiceState(ctx, Binding{}, Customer{}, OfficialStateAI); err == nil {
+	if _, err := a.TransServiceState(ctx, Binding{}, Customer{}, OfficialStateAI, ""); err == nil {
 		t.Fatal("expected err")
 	}
 	if err := a.SendMsgOnEvent(ctx, Binding{}, "c", "t"); err == nil {

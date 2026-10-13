@@ -93,7 +93,7 @@ func (g *Gateway) bindingCredentials(ctx context.Context, b BindingConfig, sb st
 	if _, err := g.Store.ExportBindingSecret(ctx, b.ID); err != nil {
 		return bridge.Binding{}, err
 	}
-	return bridge.Binding{ID: b.ID, CorpID: cr.CorpID, CorpSecret: cr.Secret, AgentID: cr.AgentID, CallbackToken: cr.Token, CallbackAESKey: cr.AESKey}, nil
+	return bridge.Binding{ID: b.ID, CorpID: cr.CorpID, CorpSecret: cr.Secret, AgentID: cr.AgentID, CallbackToken: cr.Token, CallbackAESKey: cr.AESKey, ServicerUserID: strings.TrimSpace(b.ServicerUserID)}, nil
 }
 
 // withStoredCredentials overlays console-generated virtual credentials.
@@ -279,12 +279,14 @@ func (k consoleKF) ContactURL(ctx context.Context, id, scene string) (string, er
 	return resp.URL, err
 }
 
-func (k consoleKF) TransServiceState(ctx context.Context, id, ext string, st int) (string, error) {
+func (k consoleKF) TransServiceState(ctx context.Context, id, ext string, st int, servicerUserID string) (string, error) {
 	tok, err := k.tokens.get(ctx)
 	if err != nil {
 		return "", err
 	}
-	resp, err := k.client.TransServiceState(ctx, tok, wecom.ServiceStateRequest{OpenKfID: id, ExternalUserID: ext, ServiceState: st})
+	resp, err := k.client.TransServiceState(ctx, tok, wecom.ServiceStateRequest{
+		OpenKfID: id, ExternalUserID: ext, ServiceState: st, ServicerUserID: strings.TrimSpace(servicerUserID),
+	})
 	if err != nil {
 		return "", err
 	}
@@ -402,6 +404,7 @@ func editableBindingFrom(b BindingConfig) admin.EditableBindingConfig {
 		CallbackURL: b.CallbackURL, Disabled: b.Disabled,
 		VirtualSecretEnv: b.VirtualSecretEnv, CallbackTokenEnv: b.CallbackTokenEnv,
 		CallbackAESKeyEnv: b.CallbackAESKeyEnv, CredentialRevision: b.CredentialRevision,
+		ServicerUserID: b.ServicerUserID,
 	}
 }
 
@@ -450,6 +453,7 @@ func (r consoleRuntime) SaveBindingConfig(ctx context.Context, id string, patch 
 	cur.AgentID = agent
 	cur.CallbackURL = cb
 	cur.Disabled = patch.Disabled
+	cur.ServicerUserID = strings.TrimSpace(patch.ServicerUserID)
 	cfg.Bindings[idx] = cur
 	if err := cfg.Validate(); err != nil {
 		return err
@@ -489,7 +493,7 @@ func (g *Gateway) applyBindingConfig(ctx context.Context, bc BindingConfig) erro
 	if err != nil {
 		return err
 	}
-	vb := g.withStoredCredentials(ctx, bridge.Binding{ID: bc.ID, AgentID: bc.AgentID})
+	vb := g.withStoredCredentials(ctx, bridge.Binding{ID: bc.ID, AgentID: bc.AgentID, ServicerUserID: strings.TrimSpace(bc.ServicerUserID)})
 	if vb.CorpID == "" {
 		vb, err = g.bindingCredentials(ctx, bc, sb)
 		if err != nil {
@@ -497,6 +501,7 @@ func (g *Gateway) applyBindingConfig(ctx context.Context, bc BindingConfig) erro
 		}
 	} else {
 		vb.AgentID = bc.AgentID
+		vb.ServicerUserID = strings.TrimSpace(bc.ServicerUserID)
 	}
 	if err := g.register(ctx, sb, vb); err != nil {
 		return err

@@ -29,7 +29,7 @@ func TestConsoleKFTransAndSendMsgOnEvent(t *testing.T) {
 
 	// token fail
 	bad := consoleKF{client: cl, tokens: &tokenCache{client: wecom.NewClient("http://127.0.0.1:1", "c", "s"), now: time.Now}}
-	if _, err := bad.TransServiceState(ctx, "kf", "ext", 1); err == nil {
+	if _, err := bad.TransServiceState(ctx, "kf", "ext", 1, ""); err == nil {
 		t.Fatal("token")
 	}
 	if err := bad.SendMsgOnEvent(ctx, "c", "hi"); err == nil {
@@ -38,13 +38,13 @@ func TestConsoleKFTransAndSendMsgOnEvent(t *testing.T) {
 
 	// trans API error
 	body = `{"errcode":48002,"errmsg":"no"}`
-	if _, err := k.TransServiceState(ctx, "kf", "ext", 1); err == nil {
+	if _, err := k.TransServiceState(ctx, "kf", "ext", 1, ""); err == nil {
 		t.Fatal("api")
 	}
 
 	// trans OK
 	body = `{"errcode":0,"msg_code":"mc"}`
-	code, err := k.TransServiceState(ctx, "kf", "ext", 1)
+	code, err := k.TransServiceState(ctx, "kf", "ext", 1, "")
 	if err != nil || code != "mc" {
 		t.Fatalf("%q %v", code, err)
 	}

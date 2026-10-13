@@ -207,13 +207,24 @@ func (g *Gateway) wire(ctx context.Context, cfg Config, logger Logger) error {
 		if vb, ok := g.vbs[bindingID]; ok {
 			b = vb
 		}
+		// Prefer live config servicer_userid (may hot-reload after vbs snapshot).
+		g.cfgMu.RLock()
+		for _, bc := range g.liveCfg.Bindings {
+			if bc.ID == bindingID {
+				if sid := strings.TrimSpace(bc.ServicerUserID); sid != "" {
+					b.ServicerUserID = sid
+				}
+				break
+			}
+		}
+		g.cfgMu.RUnlock()
 		cust := bridge.Customer{ID: c.ID, BindingID: c.BindingID, ExternalUserID: c.ExternalUserID, UserID: c.UID}
 		logger.Log("handover_force_end", map[string]any{
 			"binding_id": bindingID, "customer_id": c.ID, "from_mapped": fromMapped,
-			"external_userid_prefix": bridge.TruncateID(c.ExternalUserID, 8), "target": bridge.OfficialStateClosed,
-			"path": "inbound", "note": "wecom_forbids_2_3_to_1",
+			"external_userid_prefix": bridge.TruncateID(c.ExternalUserID, 8),
+			"path": "inbound", "note": "waiting_via_3_then_4",
 		})
-		if _, err := adapter.TransServiceState(ctx, b, cust, bridge.OfficialStateClosed); err != nil {
+		if err := bridge.EndOfficialHumanSession(ctx, adapter, b, cust, fromMapped); err != nil {
 			logger.Log("handover_force_end_failed", map[string]any{
 				"binding_id": bindingID, "customer_id": c.ID, "from_mapped": fromMapped,
 				"external_userid_prefix": bridge.TruncateID(c.ExternalUserID, 8), "error": err.Error(), "path": "inbound",

@@ -476,9 +476,10 @@ func (c *Console) mapped(n int) string {
 }
 
 // transfer calls service_state/trans, then reads back service_state/get.
+// servicerUserID is required when internal is HUMAN (→3); empty otherwise.
 // It returns the confirmed internal state, whether the official result is
 // certain, and a definitive rejection (nothing changed upstream).
-func (c *Console) transfer(r *http.Request, cu state.Customer, internal string, accept ...string) (string, bool, error) {
+func (c *Console) transfer(r *http.Request, cu state.Customer, internal, servicerUserID string, accept ...string) (string, bool, error) {
 	target, ok := c.officialTarget(internal)
 	if !ok {
 		return "", true, errors.New("service_state_map 未配置 " + internal + " 对应的官方状态")
@@ -487,7 +488,7 @@ func (c *Console) transfer(r *http.Request, cu state.Customer, internal string, 
 	if err != nil {
 		return "", true, errors.New("绑定不存在")
 	}
-	msgCode, err := c.cfg.KF.TransServiceState(r.Context(), b.OpenKfID, cu.ExternalUserID, target)
+	msgCode, err := c.cfg.KF.TransServiceState(r.Context(), b.OpenKfID, cu.ExternalUserID, target, servicerUserID)
 	if err != nil {
 		if definitive(err) {
 			return "", true, err
@@ -533,7 +534,7 @@ func (c *Console) customerHandover(r *http.Request, _ *session) result {
 	if res != nil {
 		return *res
 	}
-	official, certain, rejected := c.transfer(r, cu, state.CustomerWaitingHuman, state.CustomerWaitingHuman, state.CustomerHuman)
+	official, certain, rejected := c.transfer(r, cu, state.CustomerWaitingHuman, "", state.CustomerWaitingHuman, state.CustomerHuman)
 	if rejected != nil {
 		c.audit(r, "customer", cu.ID, "handover", "rejected", rejected.Error(), cu.Revision)
 		return result{location: "/admin/customers?q=" + cu.ID, flash: "转人工失败（官方未变更）：" + rejected.Error()}
@@ -607,10 +608,20 @@ func retrySQLiteBusy(ctx context.Context, attempts int, fn func() error) error {
 	return err
 }
 
-// customerRecover ends the official human session (trans→4) then restores
-// local AI with a new generation. WeCom forbids 2→1 / 3→1 (errcode 95016);
-// 4→1 is also illegal. After end→4 the customer’s next message becomes
-// official 0; inbound/send may then trans→1. This handler never trans→1.
+// bindingServicerUserID reads bindings[].servicer_userid from live config.
+func (c *Console) bindingServicerUserID(bindingID string) string {
+	for _, b := range c.cfg.Runtime.ConfigBindings() {
+		if b.ID == bindingID {
+			return strings.TrimSpace(b.ServicerUserID)
+		}
+	}
+	return ""
+}
+
+// customerRecover ends the official human session then restores local AI.
+// WAITING(2): fixed 2→3(servicer_userid)→4; missing servicer → fail 未配置接待人 (never 2→4).
+// HUMAN(3): only →4. WeCom forbids 2→1 / 3→1 (95016). After end→4 the customer's
+// next message becomes official 0; inbound/send may then trans→1. Never trans→1 here.
 func (c *Console) customerRecover(r *http.Request, _ *session) result {
 	cu, res := c.customer(r)
 	if res != nil {
@@ -638,17 +649,44 @@ func (c *Console) customerRecover(r *http.Request, _ *session) result {
 		// Official already AI (0/1): no trans; local recover only.
 	case state.CustomerClosed:
 		// Already ended: skip trans; local recover only.
-	default:
-		// WAITING/HUMAN/UNKNOWN while local is human: end→4 (never →1).
-		// Fallback 2→3→4 needs servicer_userid; admin KF has none configured
-		// → on end→4 rejection report clearly (no fake success).
+	case state.CustomerWaitingHuman:
+		sid := c.bindingServicerUserID(cu.BindingID)
+		if sid == "" {
+			detail := "未配置接待人"
+			c.audit(r, "customer", cu.ID, "recover", "rejected", detail, cu.Revision)
+			return result{location: "/admin/customers?q=" + cu.ID, flash: "恢复失败：" + detail + "（请在绑定配置填写 servicer_userid）"}
+		}
 		var certain bool
 		var rejected error
-		official, certain, rejected = c.transfer(r, cu, state.CustomerClosed, state.CustomerClosed)
+		official, certain, rejected = c.transfer(r, cu, state.CustomerHuman, sid, state.CustomerHuman)
 		if rejected != nil {
-			detail := rejected.Error() + "；无可用接待人配置，无法兜底 2→3→4"
-			c.audit(r, "customer", cu.ID, "recover", "rejected", detail, cu.Revision)
-			return result{location: "/admin/customers?q=" + cu.ID, flash: "恢复失败（官方结束被拒）：" + detail}
+			c.audit(r, "customer", cu.ID, "recover", "rejected", "2→3: "+rejected.Error(), cu.Revision)
+			return result{location: "/admin/customers?q=" + cu.ID, flash: "恢复失败（官方 2→3 被拒）：" + rejected.Error()}
+		}
+		if !certain {
+			_ = c.cfg.Store.SetCustomerState(r.Context(), cu.ID, state.CustomerUnknown)
+			_ = c.cfg.Store.SetOfficialStatus(r.Context(), cu.ID, state.CustomerUnknown)
+			c.audit(r, "customer", cu.ID, "recover", "unknown", "2→3 uncertain", cu.Revision)
+			return result{location: "/admin/customers?q=" + cu.ID, flash: "官方恢复结果未知（UNKNOWN）：AI 保持暂停，请在企业微信中核实"}
+		}
+		official, certain, rejected = c.transfer(r, cu, state.CustomerClosed, "", state.CustomerClosed)
+		if rejected != nil {
+			c.audit(r, "customer", cu.ID, "recover", "rejected", "3→4: "+rejected.Error(), cu.Revision)
+			return result{location: "/admin/customers?q=" + cu.ID, flash: "恢复失败（官方 3→4 被拒）：" + rejected.Error()}
+		}
+		if !certain {
+			_ = c.cfg.Store.SetCustomerState(r.Context(), cu.ID, state.CustomerUnknown)
+			_ = c.cfg.Store.SetOfficialStatus(r.Context(), cu.ID, state.CustomerUnknown)
+			c.audit(r, "customer", cu.ID, "recover", "unknown", "3→4 uncertain", cu.Revision)
+			return result{location: "/admin/customers?q=" + cu.ID, flash: "官方恢复结果未知（UNKNOWN）：AI 保持暂停，请在企业微信中核实"}
+		}
+	case state.CustomerHuman:
+		var certain bool
+		var rejected error
+		official, certain, rejected = c.transfer(r, cu, state.CustomerClosed, "", state.CustomerClosed)
+		if rejected != nil {
+			c.audit(r, "customer", cu.ID, "recover", "rejected", rejected.Error(), cu.Revision)
+			return result{location: "/admin/customers?q=" + cu.ID, flash: "恢复失败（官方结束被拒）：" + rejected.Error()}
 		}
 		if !certain {
 			_ = c.cfg.Store.SetCustomerState(r.Context(), cu.ID, state.CustomerUnknown)
@@ -656,6 +694,10 @@ func (c *Console) customerRecover(r *http.Request, _ *session) result {
 			c.audit(r, "customer", cu.ID, "recover", "unknown", "end→4 uncertain", cu.Revision)
 			return result{location: "/admin/customers?q=" + cu.ID, flash: "官方恢复结果未知（UNKNOWN）：AI 保持暂停，请在企业微信中核实"}
 		}
+	default:
+		detail := "官方状态 UNKNOWN，无法安全结束；请核实后再恢复"
+		c.audit(r, "customer", cu.ID, "recover", "rejected", detail, cu.Revision)
+		return result{location: "/admin/customers?q=" + cu.ID, flash: "恢复失败：" + detail}
 	}
 	nc, err := c.cfg.Store.RecoverCustomer(r.Context(), cu.ID, "admin_recover")
 	if err != nil {
@@ -669,7 +711,6 @@ func (c *Console) customerRecover(r *http.Request, _ *session) result {
 	}
 	return result{location: "/admin/customers?q=" + nc.ID, flash: flash}
 }
-
 // ---- 诊断 / 设置 ----
 
 func (c *Console) diagMark(r *http.Request, _ *session) result {
@@ -763,8 +804,12 @@ func (c *Console) bindingConfigSave(r *http.Request, _ *session) result {
 	ent := strings.TrimSpace(r.PostFormValue("enterprise_id"))
 	kf := strings.TrimSpace(r.PostFormValue("open_kfid"))
 	disabled := r.PostFormValue("disabled") == "1" || strings.EqualFold(r.PostFormValue("disabled"), "true")
+	servicer := strings.TrimSpace(r.PostFormValue("servicer_userid"))
 	if !idPattern.MatchString(project) || !idPattern.MatchString(vcorp) || !agentPattern.MatchString(agent) {
 		return bad("project_id、virtual_corp_id 或 agent_id 格式无效")
+	}
+	if servicer != "" && !idPattern.MatchString(servicer) {
+		return bad("servicer_userid 格式无效")
 	}
 	if ent == "" || kf == "" || cb == "" {
 		return bad("enterprise_id、open_kfid、callback_url 不能为空")
@@ -773,19 +818,20 @@ func (c *Console) bindingConfigSave(r *http.Request, _ *session) result {
 		return bad("callback URL 不在 allowlist：" + err.Error())
 	}
 	patch := BindingConfigPatch{
-		EnterpriseID:  ent,
-		OpenKfID:      kf,
-		ProjectID:     project,
-		VirtualCorpID: vcorp,
-		AgentID:       agent,
-		CallbackURL:   cb,
-		Disabled:      disabled,
+		EnterpriseID:   ent,
+		OpenKfID:       kf,
+		ProjectID:      project,
+		VirtualCorpID:  vcorp,
+		AgentID:        agent,
+		CallbackURL:    cb,
+		Disabled:       disabled,
+		ServicerUserID: servicer,
 	}
 	if err := c.cfg.Runtime.SaveBindingConfig(r.Context(), id, patch); err != nil {
 		c.audit(r, "binding", id, "config_save", "failed", err.Error(), 0)
 		return result{status: http.StatusBadRequest, flash: "保存失败：" + err.Error()}
 	}
-	summary := fmt.Sprintf("project=%s agent=%s disabled=%v callback=%s vcorp=%s", project, agent, disabled, cb, vcorp)
+	summary := fmt.Sprintf("project=%s agent=%s disabled=%v callback=%s vcorp=%s servicer=%s", project, agent, disabled, cb, vcorp, servicer)
 	c.audit(r, "binding", id, "config_save", "ok", summary, 0)
 	return result{location: "/admin/bindings", flash: "绑定配置已保存并热加载生效"}
 }

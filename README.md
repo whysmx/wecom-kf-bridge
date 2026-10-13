@@ -80,7 +80,7 @@ export WECOM_KF_BRIDGE_MASTER_KEY=…   # 32 字节，见配置文档
 - 未完成真实企业微信全链路联调，**非生产就绪**；UNKNOWN 结果默认不盲重试。
 - 入站目前支持 text / image / file / voice；video 等其它类型标 `UNSUPPORTED`。临时素材经 `/cgi-bin/media/get` 代理，单文件上限 25MB；`FileName` 只保留 basename。
 - 人工接管不能撤回已在途消息，也不能停止已在运行的 Codex；恢复会换代际 UID。
-- 转人工目前只到「待接入池」，不支持指定接待人员；状态 UNKNOWN 的客户需先重新转人工再恢复 AI。
+- 转人工入口目前只到「待接入池」；结束排队态（WAITING）恢复 AI 须配置 `bindings[].servicer_userid`（经 2→3→4，冒烟 95016 禁止直接 2→4）。状态 UNKNOWN 的客户需先核实/转人工再恢复。
 - 长回复会分块发送，受客服会话窗口与条数限制。
 - 绑定虚拟凭证入库后以数据库为准；配置文件里的对应 env 仅首次初始化需要。
 

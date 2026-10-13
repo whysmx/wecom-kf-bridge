@@ -186,9 +186,9 @@ func (a *WeComAdapter) ServiceState(ctx context.Context, b bridge.Binding, c bri
 }
 
 // TransServiceState calls kf/service_state/trans. officialState is the WeCom
-// integer (1 AI / 2 waiting / 3 human / 4 closed). Returns msg_code when
-// present (for send_msg_on_event). Never deletes servicers.
-func (a *WeComAdapter) TransServiceState(ctx context.Context, b bridge.Binding, c bridge.Customer, officialState int) (string, error) {
+// integer (1 AI / 2 waiting / 3 human / 4 closed). servicerUserID required for →3.
+// Returns msg_code when present (for send_msg_on_event). Never deletes servicers.
+func (a *WeComAdapter) TransServiceState(ctx context.Context, b bridge.Binding, c bridge.Customer, officialState int, servicerUserID string) (string, error) {
 	r, cl, tc, err := a.route(b.ID)
 	if err != nil {
 		a.log("service_state_trans_route_error", map[string]any{"binding_id": b.ID, "error": err.Error()})
@@ -197,6 +197,7 @@ func (a *WeComAdapter) TransServiceState(ctx context.Context, b bridge.Binding, 
 	resp, err := withToken(ctx, tc, func(tok string) (wecom.ServiceStateResponse, error) {
 		return cl.TransServiceState(ctx, tok, wecom.ServiceStateRequest{
 			OpenKfID: r.openKfID, ExternalUserID: c.ExternalUserID, ServiceState: officialState,
+			ServicerUserID: strings.TrimSpace(servicerUserID),
 		})
 	})
 	if err != nil {

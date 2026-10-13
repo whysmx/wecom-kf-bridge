@@ -71,7 +71,8 @@
       "virtual_secret_env": "BIND1_VIRTUAL_SECRET",
       "callback_token_env": "BIND1_CB_TOKEN",
       "callback_aes_key_env": "BIND1_CB_AES",
-      "callback_url": "http://cc-host.internal:8081/wecom/callback"
+      "callback_url": "http://cc-host.internal:8081/wecom/callback",
+      "servicer_userid": "WenHaiYan"
     }
   ]
 }

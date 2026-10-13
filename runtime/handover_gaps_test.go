@@ -20,7 +20,7 @@ type emptyMsgCodeAdapter struct {
 	eventN int
 }
 
-func (a *emptyMsgCodeAdapter) TransServiceState(_ context.Context, _ bridge.Binding, _ bridge.Customer, st int) (string, error) {
+func (a *emptyMsgCodeAdapter) TransServiceState(_ context.Context, _ bridge.Binding, _ bridge.Customer, st int, _ string) (string, error) {
 	a.trans = append(a.trans, st)
 	return "", nil
 }

@@ -48,7 +48,7 @@ func MatchHandoverPhrase(cfg HandoverConfig, content string) bool {
 // MarkManualFence so inbound pullBack will not ForceTrans→1 and AI stays paused.
 func RequestHumanHandover(ctx context.Context, store *state.Store, ad bridge.Adapter, b bridge.Binding, c state.Customer, cfg HandoverConfig, reason string) error {
 	cust := bridge.Customer{ID: c.ID, BindingID: c.BindingID, ExternalUserID: c.ExternalUserID, UserID: c.UID}
-	msgCode, err := ad.TransServiceState(ctx, b, cust, bridge.OfficialStateWaiting)
+	msgCode, err := ad.TransServiceState(ctx, b, cust, bridge.OfficialStateWaiting, "")
 	if err != nil {
 		return err
 	}

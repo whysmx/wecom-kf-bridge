@@ -89,6 +89,9 @@ func adminGatewayConfig(t *testing.T, ccPort int) Config {
 	cfg.WeCom.ServiceStateMap = map[string]string{"1": "AI_ELIGIBLE", "2": "WAITING_HUMAN", "3": "HUMAN", "4": "CLOSED"}
 	cfg.Admin = AdminConfig{Listen: "127.0.0.1:0", Origin: adminOrigin, PasswordHashEnv: "G_ADMIN_HASH", CompanyName: "测试企业"}
 	cfg.Security.CallbackTargets = append(cfg.Security.CallbackTargets, CallbackTarget{Host: "127.0.0.1", Port: ccPort, AllowedCIDRs: []string{"127.0.0.0/8"}})
+	for i := range cfg.Bindings {
+		cfg.Bindings[i].ServicerUserID = "WenHaiYan"
+	}
 	return cfg
 }
 
@@ -262,7 +265,8 @@ func TestAdminConsoleEndToEnd(t *testing.T) {
 		t.Fatal("config binding credentials")
 	}
 	// #33: handover/recover go through the official API and read back
-	cust, _ := g.Store.EnsureCustomer(context.Background(), "e1", "b2", "ext-e2e")
+	// Use config binding b1 (servicer_userid required for WAITING 2→3→4).
+	cust, _ := g.Store.EnsureCustomer(context.Background(), "e1", "b1", "ext-e2e")
 	c.h = g.Admin
 	if w := c.do("GET", "/admin/", nil); w.Code != http.StatusSeeOther {
 		t.Fatal("session survived restart")

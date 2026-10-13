@@ -33,8 +33,8 @@ type KF interface {
 	ContactURL(ctx context.Context, openKfID, scene string) (string, error)
 	// TransServiceState / ServiceState: official reception state
 	// (/cgi-bin/kf/service_state/trans and /get). Trans returns msg_code
-	// for send_msg_on_event (may be empty).
-	TransServiceState(ctx context.Context, openKfID, externalUserID string, state int) (msgCode string, err error)
+	// for send_msg_on_event (may be empty). servicerUserID required for →3.
+	TransServiceState(ctx context.Context, openKfID, externalUserID string, state int, servicerUserID string) (msgCode string, err error)
 	ServiceState(ctx context.Context, openKfID, externalUserID string) (int, error)
 	// SendMsgOnEvent sends a one-shot queue/welcome phrase; no-op if code empty.
 	SendMsgOnEvent(ctx context.Context, msgCode, text string) error
@@ -100,18 +100,21 @@ type EditableBindingConfig struct {
 	CallbackTokenEnv   string
 	CallbackAESKeyEnv  string
 	CredentialRevision int64
+	// ServicerUserID is bindings[].servicer_userid (e.g. WenHaiYan); needed for WAITING recover 2→3→4.
+	ServicerUserID string
 }
 
 // BindingConfigPatch is the mutable subset a bindings form may submit (#29).
 // EnterpriseID/OpenKfID are echoed for immutability checks and must match config.
 type BindingConfigPatch struct {
-	EnterpriseID  string
-	OpenKfID      string
-	ProjectID     string
-	VirtualCorpID string
-	AgentID       string
-	CallbackURL   string
-	Disabled      bool
+	EnterpriseID    string
+	OpenKfID        string
+	ProjectID       string
+	VirtualCorpID   string
+	AgentID         string
+	CallbackURL     string
+	Disabled        bool
+	ServicerUserID  string
 }
 
 // Setting is one displayed configuration value (never a secret value).
@@ -138,7 +141,7 @@ type Config struct {
 	Settings     []Setting
 	// ServiceStateMap maps official service_state values to internal states
 	// (wecom.service_state_map). Handover transfers to WAITING_HUMAN;
-	// recover ends to CLOSED (4) then restores local AI (WeCom forbids 2/3→1).
+	// recover ends WAITING via 2→3→4 (or HUMAN →4) then restores local AI.
 	ServiceStateMap map[int]string
 	// HandoverWelcome is sent via send_msg_on_event after admin/phrase trans→2.
 	HandoverWelcome string

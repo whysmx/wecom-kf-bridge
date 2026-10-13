@@ -88,6 +88,9 @@ func TestHandoverRequiresOfficialConfirmation(t *testing.T) {
 	if c.Generation != e.cust.Generation+1 || c.State != state.CustomerAIEligible || c.OfficialStatus != state.CustomerClosed {
 		t.Fatal("confirmed recover", c)
 	}
+	if e.kf.count("trans:ext-secret-id:3:WenHaiYan") == 0 {
+		t.Fatal("confirmed WAITING recover must trans→3 with servicer", e.kf.calls)
+	}
 	if e.kf.count("trans:ext-secret-id:4") == 0 {
 		t.Fatal("confirmed recover must trans→4", e.kf.calls)
 	}

@@ -37,8 +37,12 @@ type fakeKF struct {
 	stuck    bool // trans "succeeds" but state does not change
 }
 
-func (f *fakeKF) TransServiceState(_ context.Context, kf, ext string, st int) (string, error) {
-	f.record(fmt.Sprintf("trans:%s:%d", ext, st))
+func (f *fakeKF) TransServiceState(_ context.Context, kf, ext string, st int, servicer string) (string, error) {
+	if servicer != "" {
+		f.record(fmt.Sprintf("trans:%s:%d:%s", ext, st, servicer))
+	} else {
+		f.record(fmt.Sprintf("trans:%s:%d", ext, st))
+	}
 	if f.transErr != nil {
 		return "", f.transErr
 	}
@@ -179,6 +183,7 @@ func (f *fakeRuntime) SaveBindingConfig(_ context.Context, id string, patch Bind
 		b.AgentID = patch.AgentID
 		b.CallbackURL = patch.CallbackURL
 		b.Disabled = patch.Disabled
+		b.ServicerUserID = patch.ServicerUserID
 		f.configBindings[i] = b
 		f.savedBindings = append(f.savedBindings, patch)
 		f.savedBindingID = append(f.savedBindingID, id)
@@ -226,6 +231,7 @@ func newEnv(t *testing.T, mut ...func(*Config)) *env {
 		ID: "b1", EnterpriseID: "e1", OpenKfID: "wk1", ProjectID: "p1", VirtualCorpID: "bridge_b1",
 		AgentID: "1000002", CallbackURL: "http://cc.internal:9000/wecom",
 		VirtualSecretEnv: "B1_SECRET", CallbackTokenEnv: "B1_TOKEN", CallbackAESKeyEnv: "B1_AES",
+		ServicerUserID: "WenHaiYan",
 	}}}, now: time.Unix(1_800_000_000, 0), cust: cu}
 	cfg := Config{Store: st, KF: e.kf, Runtime: e.rt, PasswordHash: hash, Origin: origin, EnterpriseID: "e1", CompanyName: "测试企业", CorpID: "ww1234567890", Clock: e.clock,
 		ServiceStateMap: map[int]string{1: state.CustomerAIEligible, 2: state.CustomerWaitingHuman, 3: state.CustomerHuman, 4: state.CustomerClosed},
