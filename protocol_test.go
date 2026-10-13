@@ -77,18 +77,19 @@ func TestSendChecksOfficialServiceState(t *testing.T) {
 		t.Fatalf("%+v", o)
 	}
 	e.ad.svcErr, e.ad.svcState = nil, state.CustomerHuman
-	if code, v := e.send(tok, e.cust.UID, "text", "x"); code != 403 || errcode(v) != ErrCodeDisabled {
-		t.Fatalf("human state: %d %v", code, v)
+	// No manual intent: force-trans → 1 then send (MVP #31).
+	if code, v := e.send(tok, e.cust.UID, "text", "x"); code != 200 || errcode(v) != 0 {
+		t.Fatalf("force-trans human→AI then send: %d %v", code, v)
+	}
+	if got := e.ad.transed(); len(got) != 1 || got[0] != OfficialStateAI {
+		t.Fatalf("expected Trans(1), got %v", got)
+	}
+	if len(e.ad.sent()) != 1 {
+		t.Fatalf("expected one send after force-trans, got %d", len(e.ad.sent()))
 	}
 	c, _ := e.st.Customer(context.Background(), e.cust.ID)
-	if c.State != state.CustomerHuman {
-		t.Fatalf("handover not fenced locally: %s", c.State)
-	}
-	if len(e.ad.sent()) != 0 {
-		t.Fatal("sent while human")
-	}
-	if c.WindowUsed != 0 {
-		t.Fatalf("budget not released for unsent requests: %d", c.WindowUsed)
+	if c.State != state.CustomerAIEligible || c.FenceSource == state.FenceManual {
+		t.Fatalf("must not leave manual fence: %s/%s", c.State, c.FenceSource)
 	}
 }
 

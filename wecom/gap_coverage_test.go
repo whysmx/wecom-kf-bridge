@@ -142,3 +142,30 @@ func TestWebhookCoverageGapBranches(t *testing.T) {
 		t.Fatalf("unexpected body-read status %d", rr.Code)
 	}
 }
+
+func TestSendMsgOnEventCoverage(t *testing.T) {
+	var n int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n++
+		w.Write([]byte(`{"errcode":0,"msgid":"m"}`))
+	}))
+	t.Cleanup(srv.Close)
+	c := NewClient(srv.URL, "c", "s")
+	c.MaxRetries = 0
+	ctx := context.Background()
+	if _, err := c.SendMsgOnEvent(ctx, "", EventMsgRequest{Code: "c", MsgType: "text"}); err == nil {
+		t.Fatal("empty token")
+	}
+	if _, err := c.SendMsgOnEvent(ctx, "tok", EventMsgRequest{Code: "", MsgType: "text"}); err == nil {
+		t.Fatal("empty code")
+	}
+	if _, err := c.SendMsgOnEvent(ctx, "tok", EventMsgRequest{Code: "c", MsgType: ""}); err == nil {
+		t.Fatal("empty msgtype")
+	}
+	if _, err := c.SendMsgOnEvent(ctx, "tok", EventMsgRequest{Code: "c", MsgType: "text", Text: &SendText{Content: "hi"}}); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("hits %d", n)
+	}
+}

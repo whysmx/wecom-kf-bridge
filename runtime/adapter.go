@@ -185,6 +185,62 @@ func (a *WeComAdapter) ServiceState(ctx context.Context, b bridge.Binding, c bri
 	return state.CustomerUnknown, nil
 }
 
+// TransServiceState calls kf/service_state/trans. officialState is the WeCom
+// integer (1 AI / 2 waiting / 3 human / 4 closed). Returns msg_code when
+// present (for send_msg_on_event). Never deletes servicers.
+func (a *WeComAdapter) TransServiceState(ctx context.Context, b bridge.Binding, c bridge.Customer, officialState int) (string, error) {
+	r, cl, tc, err := a.route(b.ID)
+	if err != nil {
+		a.log("service_state_trans_route_error", map[string]any{"binding_id": b.ID, "error": err.Error()})
+		return "", err
+	}
+	resp, err := withToken(ctx, tc, func(tok string) (wecom.ServiceStateResponse, error) {
+		return cl.TransServiceState(ctx, tok, wecom.ServiceStateRequest{
+			OpenKfID: r.openKfID, ExternalUserID: c.ExternalUserID, ServiceState: officialState,
+		})
+	})
+	if err != nil {
+		var ae *wecom.APIError
+		if errors.As(err, &ae) {
+			a.log("service_state_trans_errcode", map[string]any{
+				"binding_id": b.ID, "open_kfid": r.openKfID, "target": officialState,
+				"errcode": ae.Code, "errmsg": ae.Message,
+			})
+			return "", &bridge.SendError{Kind: bridge.SendRejected, Err: err}
+		}
+		a.log("service_state_trans_call_error", map[string]any{"binding_id": b.ID, "error": err.Error()})
+		return "", err
+	}
+	a.log("service_state_trans_ok", map[string]any{
+		"binding_id": b.ID, "open_kfid": r.openKfID, "target": officialState, "has_msg_code": resp.MsgCode != "",
+	})
+	return resp.MsgCode, nil
+}
+
+// SendMsgOnEvent sends a one-shot queue/welcome/end phrase via msg_code.
+func (a *WeComAdapter) SendMsgOnEvent(ctx context.Context, b bridge.Binding, msgCode, text string) error {
+	msgCode = strings.TrimSpace(msgCode)
+	text = strings.TrimSpace(text)
+	if msgCode == "" || text == "" {
+		return nil
+	}
+	_, cl, tc, err := a.route(b.ID)
+	if err != nil {
+		return err
+	}
+	_, err = withToken(ctx, tc, func(tok string) (wecom.SendResponse, error) {
+		return cl.SendMsgOnEvent(ctx, tok, wecom.EventMsgRequest{
+			Code: msgCode, MsgType: "text", Text: &wecom.SendText{Content: text},
+		})
+	})
+	if err != nil {
+		a.log("send_msg_on_event_failed", map[string]any{"binding_id": b.ID, "error": err.Error()})
+		return err
+	}
+	a.log("send_msg_on_event_ok", map[string]any{"binding_id": b.ID})
+	return nil
+}
+
 func (a *WeComAdapter) GetMedia(ctx context.Context, b bridge.Binding, mediaID string) (bridge.MediaDownload, error) {
 	mediaID = strings.TrimSpace(mediaID)
 	if mediaID == "" {

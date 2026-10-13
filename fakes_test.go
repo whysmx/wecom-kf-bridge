@@ -18,16 +18,22 @@ import (
 
 // fakeAdapter is test-only; production code has no always-succeeding adapter.
 type fakeAdapter struct {
-	mu        sync.Mutex
-	name      string
-	userErr   error
-	svcState  string
-	svcErr    error
-	sendErrAt int // 1-based chunk that fails; 0 = never
-	sendErr   error
-	sends     []SendRequest
-	media     map[string]MediaDownload
-	mediaErr  error
+	mu             sync.Mutex
+	name           string
+	userErr        error
+	svcState       string
+	svcErr         error
+	svcSeq         []any // optional per-call override: string state or error
+	transErr       error
+	transNoPromote bool // Trans succeeds but does not flip svcState (reread tests)
+	transCalls     []int
+	eventCalls     []string
+	eventErr       error
+	sendErrAt      int // 1-based chunk that fails; 0 = never
+	sendErr        error
+	sends          []SendRequest
+	media          map[string]MediaDownload
+	mediaErr       error
 }
 
 func (a *fakeAdapter) GetUser(_ context.Context, _ Binding, c Customer) (Customer, error) {
@@ -38,6 +44,16 @@ func (a *fakeAdapter) GetUser(_ context.Context, _ Binding, c Customer) (Custome
 	return c, nil
 }
 func (a *fakeAdapter) ServiceState(context.Context, Binding, Customer) (string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.svcSeq) > 0 {
+		v := a.svcSeq[0]
+		a.svcSeq = a.svcSeq[1:]
+		if err, ok := v.(error); ok {
+			return "", err
+		}
+		return v.(string), nil
+	}
 	if a.svcErr != nil {
 		return "", a.svcErr
 	}
@@ -45,6 +61,32 @@ func (a *fakeAdapter) ServiceState(context.Context, Binding, Customer) (string, 
 		return state.CustomerAIEligible, nil
 	}
 	return a.svcState, nil
+}
+func (a *fakeAdapter) TransServiceState(_ context.Context, _ Binding, _ Customer, officialState int) (string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.transCalls = append(a.transCalls, officialState)
+	if a.transErr != nil {
+		return "", a.transErr
+	}
+	if a.transNoPromote {
+		return "msg-code-test", nil
+	}
+	// Successful force-trans to AI updates the fake official view.
+	if officialState == OfficialStateAI {
+		a.svcState = state.CustomerAIEligible
+	} else if officialState == OfficialStateWaiting {
+		a.svcState = state.CustomerWaitingHuman
+	} else if officialState == OfficialStateHuman {
+		a.svcState = state.CustomerHuman
+	}
+	return "msg-code-test", nil
+}
+func (a *fakeAdapter) SendMsgOnEvent(_ context.Context, _ Binding, code, text string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.eventCalls = append(a.eventCalls, code+"|"+text)
+	return a.eventErr
 }
 func (a *fakeAdapter) SendText(_ context.Context, r SendRequest) (string, error) {
 	a.mu.Lock()
@@ -73,6 +115,11 @@ func (a *fakeAdapter) sent() []SendRequest {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([]SendRequest(nil), a.sends...)
+}
+func (a *fakeAdapter) transed() []int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]int(nil), a.transCalls...)
 }
 
 type env struct {

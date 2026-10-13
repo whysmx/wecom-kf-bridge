@@ -50,6 +50,9 @@ type ServiceStateResponse struct {
 	ErrMsg         string `json:"errmsg"`
 	ServiceState   int    `json:"service_state"`
 	ServicerUserID string `json:"servicer_userid"`
+	// MsgCode is returned by service_state/trans when entering waiting(2),
+	// human(3), or closed(4); use it once with send_msg_on_event.
+	MsgCode string `json:"msg_code"`
 }
 type Servicer struct {
 	UserID string `json:"userid"`

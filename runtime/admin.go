@@ -279,12 +279,27 @@ func (k consoleKF) ContactURL(ctx context.Context, id, scene string) (string, er
 	return resp.URL, err
 }
 
-func (k consoleKF) TransServiceState(ctx context.Context, id, ext string, st int) error {
+func (k consoleKF) TransServiceState(ctx context.Context, id, ext string, st int) (string, error) {
+	tok, err := k.tokens.get(ctx)
+	if err != nil {
+		return "", err
+	}
+	resp, err := k.client.TransServiceState(ctx, tok, wecom.ServiceStateRequest{OpenKfID: id, ExternalUserID: ext, ServiceState: st})
+	if err != nil {
+		return "", err
+	}
+	return resp.MsgCode, nil
+}
+func (k consoleKF) SendMsgOnEvent(ctx context.Context, code, text string) error {
+	code, text = strings.TrimSpace(code), strings.TrimSpace(text)
+	if code == "" || text == "" {
+		return nil
+	}
 	tok, err := k.tokens.get(ctx)
 	if err != nil {
 		return err
 	}
-	_, err = k.client.TransServiceState(ctx, tok, wecom.ServiceStateRequest{OpenKfID: id, ExternalUserID: ext, ServiceState: st})
+	_, err = k.client.SendMsgOnEvent(ctx, tok, wecom.EventMsgRequest{Code: code, MsgType: "text", Text: &wecom.SendText{Content: text}})
 	return err
 }
 
@@ -513,6 +528,7 @@ func (g *Gateway) buildAdmin(cfg Config) (http.Handler, error) {
 		InsecureCookie:  cfg.Admin.InsecureCookie,
 		LanNoLogin:      cfg.Admin.LanNoLoginEnabled(),
 		ServiceStateMap: g.adapter.states,
+		HandoverWelcome: HandoverConfig{Welcome: cfg.WeCom.HandoverWelcome}.welcome(),
 		SessionTTL:      time.Duration(cfg.Admin.SessionTTLMinutes) * time.Minute, MaxSessions: cfg.Admin.MaxSessions,
 	})
 	if err != nil {

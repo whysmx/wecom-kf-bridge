@@ -68,6 +68,12 @@ type Config struct {
 		// treat the customer as AI_ELIGIBLE for send instead of blocking with
 		// 70007. Default false; never enable in production.
 		Treat48002AsAIEligible bool `json:"treat_48002_as_ai_eligible"`
+		// HandoverPhrase is the exact inbound text (trim) that triggers the
+		// same intentional handoff as the admin button. Default 转人工.
+		HandoverPhrase string `json:"handover_phrase"`
+		// HandoverWelcome is sent via send_msg_on_event after trans→2.
+		// Default 正在为您转接人工客服，请稍候…
+		HandoverWelcome string `json:"handover_welcome"`
 	} `json:"wecom"`
 	Enterprises []EnterpriseConfig `json:"enterprises"`
 	Bindings    []BindingConfig    `json:"bindings"`

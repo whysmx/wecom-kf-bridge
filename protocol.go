@@ -107,6 +107,14 @@ func sendKind(err error) SendErrorKind {
 	return SendUnknown
 }
 
+// Official WeCom service_state integers (documented; map names via config).
+const (
+	OfficialStateAI      = 1 // 由智能助手接待
+	OfficialStateWaiting = 2 // 待接入池排队中
+	OfficialStateHuman   = 3 // 由人工接待
+	OfficialStateClosed  = 4 // 已结束/未开始
+)
+
 // Adapter is the narrow boundary to the real WeChat customer service API.
 // It intentionally contains no model, queue, or credential APIs.
 type Adapter interface {
@@ -115,6 +123,12 @@ type Adapter interface {
 	// ServiceState returns the internal handover state (state.Customer*)
 	// from the official service_state API. Errors block the send.
 	ServiceState(context.Context, Binding, Customer) (string, error)
+	// TransServiceState calls kf/service_state/trans and returns msg_code
+	// (empty when the target state does not issue one). state is the
+	// official integer (1 AI / 2 waiting / 3 human / 4 closed).
+	TransServiceState(ctx context.Context, b Binding, c Customer, officialState int) (msgCode string, err error)
+	// SendMsgOnEvent sends a one-shot event response (welcome/queue/end).
+	SendMsgOnEvent(ctx context.Context, b Binding, msgCode, text string) error
 	// SendText sends one chunk and returns the upstream msgid.
 	SendText(context.Context, SendRequest) (string, error)
 	// GetMedia proxies WeCom /cgi-bin/media/get with the real corp token.
@@ -126,6 +140,7 @@ type Adapter interface {
 // implements it. There is no in-memory customer table.
 type Store interface {
 	CustomerByUID(context.Context, string, string) (state.Customer, error)
+	Customer(context.Context, string) (state.Customer, error)
 	CreateOutbox(context.Context, state.OutboxMessage) (state.OutboxMessage, error)
 	BlockOutbox(context.Context, string, string) (state.OutboxMessage, error)
 	MarkOutboxSending(context.Context, string) (state.OutboxMessage, error)
@@ -135,6 +150,8 @@ type Store interface {
 	MarkOutboxUnknown(context.Context, string, string) (state.OutboxMessage, error)
 	ReleaseBudget(context.Context, string, int) error
 	SetHandoverStatus(context.Context, string, string, string) error
+	BeginHandover(context.Context, string, string) (state.Customer, error)
+	ClearAutoFenceInPlace(context.Context, string, string) (state.Customer, error)
 }
 
 // unavailableAdapter fails closed when no real adapter is configured; there
@@ -148,6 +165,12 @@ func (unavailableAdapter) GetUser(_ context.Context, _ Binding, c Customer) (Cus
 }
 func (unavailableAdapter) ServiceState(context.Context, Binding, Customer) (string, error) {
 	return "", errNoAdapter
+}
+func (unavailableAdapter) TransServiceState(context.Context, Binding, Customer, int) (string, error) {
+	return "", errNoAdapter
+}
+func (unavailableAdapter) SendMsgOnEvent(context.Context, Binding, string, string) error {
+	return errNoAdapter
 }
 func (unavailableAdapter) SendText(context.Context, SendRequest) (string, error) {
 	return "", &SendError{Kind: SendUnavailable, Err: errNoAdapter}
@@ -510,7 +533,17 @@ func (s *Server) handleMessageSend(w http.ResponseWriter, r *http.Request) {
 // fence, authorization, binding and window/budget checked atomically), query
 // the official servicing state, then send chunk by chunk, recording each
 // accepted chunk. Errors are mapped to 70004/70006/70007/70008.
+//
+// Human-handover MVP (#31): when the official state is WAITING_HUMAN/HUMAN
+// but the local customer has no manual handoff intent (口令/后台 BeginHandover),
+// force kf/service_state/trans → 1 (AI), re-read, then continue the send.
+// Manual fences keep returning 70004 and are never auto-pulled back.
 func (s *Server) send(ctx context.Context, b Binding, sc state.Customer, agent, content string, chunks []string) error {
+	var err error
+	sc, err = s.ensureAIEligibleForSend(ctx, b, sc)
+	if err != nil {
+		return err
+	}
 	o, err := s.cfg.Store.CreateOutbox(ctx, state.OutboxMessage{CustomerID: sc.ID, Generation: sc.Generation, UID: sc.UID, Body: content, BudgetUnits: len(chunks), ChunksTotal: len(chunks)})
 	if err != nil {
 		return outboxRejection(err)
@@ -521,12 +554,19 @@ func (s *Server) send(ctx context.Context, b Binding, sc state.Customer, agent, 
 		_, _ = s.cfg.Store.BlockOutbox(context.WithoutCancel(ctx), o.ID, state.BlockStateQuery)
 		return errAPI{ErrCodeUnavailable, "service state unavailable", http.StatusServiceUnavailable}
 	}
-	if st != state.CustomerAIEligible && st != state.CustomerAIEligibleBypass48002 {
-		// An official non-AI state is never overridden. 已结束/未开始 (CLOSED)
-		// only blocks this send: the next customer message reopens the
-		// session officially (→ 0), so no persistent fence is written.
-		// Human/queue/unknown states fence locally as automatic fences,
-		// cleared only when the official state is AI again (delivery path).
+	if st == state.CustomerWaitingHuman || st == state.CustomerHuman {
+		if sc.FenceSource == state.FenceManual {
+			_, _ = s.cfg.Store.BlockOutbox(context.WithoutCancel(ctx), o.ID, state.BlockHeld)
+			return errAPI{ErrCodeDisabled, "customer held for human service", http.StatusForbidden}
+		}
+		if err := s.forceTransToAI(ctx, b, sc, st); err != nil {
+			_, _ = s.cfg.Store.BlockOutbox(context.WithoutCancel(ctx), o.ID, state.BlockStateQuery)
+			return err
+		}
+		st = state.CustomerAIEligible
+	} else if st != state.CustomerAIEligible && st != state.CustomerAIEligibleBypass48002 {
+		// CLOSED / UNKNOWN: keep prior fail-closed behaviour. CLOSED only
+		// blocks this send (no persistent fence). UNKNOWN auto-fences.
 		if st == "" {
 			st = state.CustomerUnknown
 		}
@@ -574,6 +614,88 @@ func (s *Server) send(ctx context.Context, b Binding, sc state.Customer, agent, 
 	if _, err = s.cfg.Store.TransitionOutbox(context.WithoutCancel(ctx), o.ID, state.OutboxUpstreamAccepted, ""); err != nil {
 		return errAPI{ErrCodeUnknown, "send result unknown", http.StatusBadGateway}
 	}
+	return nil
+}
+
+// ensureAIEligibleForSend clears an automatic fence when we can force the
+// official session back to AI. Manual handoff intent is never cleared here.
+func (s *Server) ensureAIEligibleForSend(ctx context.Context, b Binding, sc state.Customer) (state.Customer, error) {
+	if sc.State == state.CustomerAIEligible {
+		return sc, nil
+	}
+	if sc.FenceSource == state.FenceManual {
+		// Let CreateOutbox record BLOCKED for audit; do not force-trans.
+		return sc, nil
+	}
+	c := customerFrom(sc)
+	st, err := s.cfg.Adapter.ServiceState(ctx, b, c)
+	if err != nil {
+		return sc, errAPI{ErrCodeUnavailable, "service state unavailable", http.StatusServiceUnavailable}
+	}
+	if st == state.CustomerWaitingHuman || st == state.CustomerHuman {
+		if err := s.forceTransToAI(ctx, b, sc, st); err != nil {
+			return sc, err
+		}
+		st = state.CustomerAIEligible
+	}
+	// After a confirmed official AI (including force-trans), drop an automatic
+	// fence in place so this UID can still send. The 48002 bypass is not a
+	// real AI observation and must not clear fences (treat_48002 unchanged).
+	if st == state.CustomerAIEligible && sc.FenceSource == state.FenceAuto {
+		nc, err := s.cfg.Store.ClearAutoFenceInPlace(ctx, sc.ID, "force_trans_ai")
+		if err != nil {
+			return sc, errAPI{ErrCodeUnavailable, "local fence clear failed", http.StatusServiceUnavailable}
+		}
+		return nc, nil
+	}
+	if sc.State != state.CustomerAIEligible {
+		return sc, errAPI{ErrCodeDisabled, "customer held for human service", http.StatusForbidden}
+	}
+	return sc, nil
+}
+
+// forceTransToAI calls official trans→1 and re-reads. Fail closed on any
+// uncertainty; never silently send as AI. Does not delete servicers.
+func (s *Server) forceTransToAI(ctx context.Context, b Binding, sc state.Customer, fromMapped string) error {
+	c := customerFrom(sc)
+	s.cfg.Logger.Log("handover_force_trans_ai", map[string]any{
+		"binding_id":             b.ID,
+		"customer_id":            sc.ID,
+		"from_mapped":            fromMapped,
+		"external_userid_prefix": TruncateID(sc.ExternalUserID, 8),
+		"target":                 OfficialStateAI,
+	})
+	_, err := s.cfg.Adapter.TransServiceState(ctx, b, c, OfficialStateAI)
+	if err != nil {
+		s.cfg.Logger.Log("handover_force_trans_ai_failed", map[string]any{
+			"binding_id":             b.ID,
+			"customer_id":            sc.ID,
+			"from_mapped":            fromMapped,
+			"external_userid_prefix": TruncateID(sc.ExternalUserID, 8),
+			"error":                  err.Error(),
+		})
+		var se *SendError
+		if errors.As(err, &se) && se.Kind == SendRejected {
+			return errAPI{ErrCodePlatform, "force trans to AI rejected", http.StatusBadGateway}
+		}
+		return errAPI{ErrCodeUnavailable, "force trans to AI failed", http.StatusServiceUnavailable}
+	}
+	got, err := s.cfg.Adapter.ServiceState(ctx, b, c)
+	if err != nil {
+		s.cfg.Logger.Log("handover_force_trans_ai_reread_failed", map[string]any{
+			"binding_id": b.ID, "customer_id": sc.ID, "error": err.Error(),
+		})
+		return errAPI{ErrCodeUnavailable, "force trans re-read failed", http.StatusServiceUnavailable}
+	}
+	if got != state.CustomerAIEligible && got != state.CustomerAIEligibleBypass48002 {
+		s.cfg.Logger.Log("handover_force_trans_ai_not_confirmed", map[string]any{
+			"binding_id": b.ID, "customer_id": sc.ID, "got": got, "from_mapped": fromMapped,
+		})
+		return errAPI{ErrCodeUnavailable, "force trans not confirmed as AI", http.StatusServiceUnavailable}
+	}
+	s.cfg.Logger.Log("handover_force_trans_ai_ok", map[string]any{
+		"binding_id": b.ID, "customer_id": sc.ID, "from_mapped": fromMapped,
+	})
 	return nil
 }
 

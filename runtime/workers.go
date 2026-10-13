@@ -184,8 +184,16 @@ type DeliveryWorker struct {
 	MaxConc     int
 	Logger      Logger
 	// OfficialState queries the official service_state (mapped) for an
-	// automatically fenced customer; nil disables automatic recovery.
+	// automatically fenced customer; nil disables automatic recovery and
+	// inbound force-pullback to AI.
 	OfficialState func(ctx context.Context, bindingID string, c state.Customer) (string, error)
+	// ForceTransToAI forces official session to AI (1) and re-confirms.
+	// Nil disables inbound force-pullback (send path has its own copy).
+	ForceTransToAI func(ctx context.Context, bindingID string, c state.Customer, fromMapped string) error
+	// HandoverPhrase exact-match (trim) triggers intentional human handoff.
+	HandoverPhrase string
+	// OnHandoverPhrase runs the official+local handoff; nil disables 口令.
+	OnHandoverPhrase func(ctx context.Context, c state.Customer, m state.InboxMessage) error
 
 	kick chan struct{}
 	once sync.Once
@@ -262,6 +270,61 @@ func (d *DeliveryWorker) DeliverOnce(ctx context.Context) {
 		}()
 	}
 	wg.Wait()
+}
+
+// pullBackOfficialHumanIfNeeded: architecture §2 — on inbound, if there is
+// no manual handoff intent but official state is WAITING_HUMAN/HUMAN,
+// force trans→1 (same as send ensureAIEligibleForSend), clear an auto fence
+// in place (no generation bump), then continue toward AI delivery.
+// Manual fences are never pulled back. Hooks nil → no-op (tests/legacy).
+// Returns ok=false to HELD fail-closed when force-trans/clear fails.
+func (d *DeliveryWorker) pullBackOfficialHumanIfNeeded(ctx context.Context, c state.Customer, m state.InboxMessage) (state.Customer, bool) {
+	if c.FenceSource == state.FenceManual {
+		return c, true
+	}
+	if d.OfficialState == nil || d.ForceTransToAI == nil {
+		return c, true
+	}
+	st, err := d.OfficialState(ctx, m.BindingID, c)
+	if err != nil {
+		// Align with send ensureAIEligibleForSend: query failure is fail-closed
+		// (do not deliver to AI while official state is unknown).
+		if d.Logger != nil {
+			d.Logger.Log("handover_inbound_official_state_failed", map[string]any{
+				"customer_id": c.ID, "binding_id": m.BindingID, "error": err.Error(),
+			})
+		}
+		return c, false
+	}
+	if st != state.CustomerWaitingHuman && st != state.CustomerHuman {
+		return c, true
+	}
+	if err := d.ForceTransToAI(ctx, m.BindingID, c, st); err != nil {
+		if d.Logger != nil {
+			d.Logger.Log("handover_inbound_force_trans_failed", map[string]any{
+				"customer_id": c.ID, "binding_id": m.BindingID, "from_mapped": st, "error": err.Error(),
+			})
+		}
+		return c, false
+	}
+	if c.FenceSource == state.FenceAuto {
+		nc, err := d.Store.ClearAutoFenceInPlace(ctx, c.ID, "force_trans_ai")
+		if err != nil {
+			if d.Logger != nil {
+				d.Logger.Log("handover_inbound_clear_fence_failed", map[string]any{
+					"customer_id": c.ID, "error": err.Error(),
+				})
+			}
+			return c, false
+		}
+		c = nc
+	}
+	if d.Logger != nil {
+		d.Logger.Log("handover_inbound_force_trans_ok", map[string]any{
+			"customer_id": c.ID, "binding_id": m.BindingID, "from_mapped": st,
+		})
+	}
+	return c, true
 }
 
 // autoRecover: a customer fenced automatically (from an official
@@ -361,10 +424,24 @@ func (d *DeliveryWorker) deliver(ctx context.Context, m state.InboxMessage) bool
 	if err != nil {
 		return false
 	}
+	if d.OnHandoverPhrase != nil && m.Type == "text" && MatchHandoverPhrase(HandoverConfig{Phrase: d.HandoverPhrase}, m.PayloadRef) {
+		if err := d.OnHandoverPhrase(ctx, c, m); err != nil {
+			d.Logger.Log("handover_phrase_failed", map[string]any{"customer_id": c.ID, "inbox_id": m.ID, "error": err.Error()})
+			return step(state.InboxHeld, "handover_phrase_failed")
+		}
+		d.Logger.Log("handover_phrase_ok", map[string]any{"customer_id": c.ID, "inbox_id": m.ID})
+		return step(state.InboxHeld, "handover_phrase")
+	}
+	// No manual intent + official 2/3 → force trans→1 before AI (arch §2).
+	var ok bool
+	c, ok = d.pullBackOfficialHumanIfNeeded(ctx, c, m)
+	if !ok {
+		return step(state.InboxHeld, "inbound_ai_gate_failed")
+	}
 	if c.State != state.CustomerAIEligible && c.FenceSource == state.FenceAuto && c.Authorized && c.Generation == m.Generation {
 		c, m = d.autoRecover(ctx, c, m)
 	}
-	if c.State != state.CustomerAIEligible || !c.Authorized || c.Generation != m.Generation {
+	if c.FenceSource == state.FenceManual || c.State != state.CustomerAIEligible || !c.Authorized || c.Generation != m.Generation {
 		return step(state.InboxHeld, "customer_not_eligible")
 	}
 	if m.CreateTime.IsZero() {

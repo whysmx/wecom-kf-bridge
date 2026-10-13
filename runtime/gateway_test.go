@@ -32,8 +32,12 @@ type fakeWeCom struct {
 	pages []string
 	// idle is next_cursor returned once pages are exhausted (default c9);
 	// cursors records the cursor of every sync_msg request.
-	idle    string
-	cursors []string
+	idle      string
+	cursors   []string
+	transBody string // override service_state/trans JSON
+	stateGet  string // override service_state/get JSON
+	transN    int
+	eventN    int
 }
 
 func (f *fakeWeCom) handler(t *testing.T) http.Handler {
@@ -64,7 +68,27 @@ func (f *fakeWeCom) handler(t *testing.T) http.Handler {
 		fmt.Fprint(w, p)
 	})
 	mux.HandleFunc("/cgi-bin/kf/service_state/get", func(w http.ResponseWriter, r *http.Request) {
+		if f.stateGet != "" {
+			fmt.Fprint(w, f.stateGet)
+			return
+		}
 		fmt.Fprint(w, `{"errcode":0,"service_state":1}`)
+	})
+	mux.HandleFunc("/cgi-bin/kf/service_state/trans", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.transN++
+		body := f.transBody
+		f.mu.Unlock()
+		if body == "" {
+			body = `{"errcode":0,"msg_code":"mc-gw"}`
+		}
+		fmt.Fprint(w, body)
+	})
+	mux.HandleFunc("/cgi-bin/kf/send_msg_on_event", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.eventN++
+		f.mu.Unlock()
+		fmt.Fprint(w, `{"errcode":0,"msgid":"ev1"}`)
 	})
 	mux.HandleFunc("/cgi-bin/kf/customer/batchget", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"errcode":0,"customer_list":[{"external_userid":"ext-a","nickname":"小海"}]}`)
