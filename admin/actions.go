@@ -452,9 +452,15 @@ func (c *Console) customer(r *http.Request) (state.Customer, *result) {
 }
 
 // officialTarget returns the service_state mapped to an internal state.
+// Among keys that map to the same internal state, pick the smallest valid
+// WeCom official state (1–4). Key 0 is skipped: kf/service_state/trans
+// rejects 0 with errcode 40058 (OfficialStateAI is 1).
 func (c *Console) officialTarget(internal string) (int, bool) {
 	best, ok := 0, false
 	for k, v := range c.cfg.ServiceStateMap {
+		if k < 1 || k > 4 {
+			continue
+		}
 		if v == internal && (!ok || k < best) {
 			best, ok = k, true
 		}
