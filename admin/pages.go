@@ -199,6 +199,9 @@ func (c *Console) settingsPage(w http.ResponseWriter, r *http.Request, s *sessio
 		"Treat48002AsAIEligible": ed.Treat48002AsAIEligible,
 		"ServiceStateMapJSON":    mapJSON,
 		"PublicBaseURL":          ed.PublicBaseURL,
+		"HandoverQueueScript":    ed.HandoverQueueScript,
+		"HandoverHumanScript":    ed.HandoverHumanScript,
+		"HandoverEndScript":      ed.HandoverEndScript,
 	})
 }
 

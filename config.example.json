@@ -43,7 +43,12 @@
     ],
     "service_state_map": {},
     "handover_phrase": "转人工",
-    "handover_welcome": "正在为您转接人工客服，请稍候…"
+    "handover_welcome": "正在为您转接人工客服，请稍候…",
+    "handover_scripts": {
+      "queue": "正在为您转接人工客服，请稍候…",
+      "human": "人工客服已接入，请描述您的问题。",
+      "end": "本次人工服务已结束，后续将由智能助手继续为您服务。"
+    }
   },
   "enterprises": [
     {

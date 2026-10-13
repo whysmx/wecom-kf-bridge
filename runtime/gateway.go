@@ -237,7 +237,7 @@ func (g *Gateway) wire(ctx context.Context, cfg Config, logger Logger) error {
 		})
 		return nil
 	}
-	hcfg := HandoverConfig{Phrase: cfg.WeCom.HandoverPhrase, Welcome: cfg.WeCom.HandoverWelcome}
+	hcfg := HandoverConfig{Phrase: cfg.WeCom.HandoverPhrase, Welcome: cfg.WeCom.HandoverWelcome, Scripts: cfg.WeCom.HandoverScripts}
 	g.Delivery.HandoverPhrase = hcfg.phrase()
 	g.Delivery.OnHandoverPhrase = func(ctx context.Context, c state.Customer, m state.InboxMessage) error {
 		vb, ok := g.vbs[m.BindingID]

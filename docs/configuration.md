@@ -30,7 +30,10 @@
 | `wecom.allow_insecure_http` | 仅测试/本地 fake 允许 http API；启动会打安全告警 |
 | `wecom.treat_48002_as_ai_eligible` | **仅联调**。默认 `false`。为 `true` 时，若 `kf/service_state/get` 返回官方 errcode **48002**（api forbidden），记 WARNING（无 PII）并返回可区分结果 `AI_ELIGIBLE_48002_BYPASS`：**仅发送路径**按可发送处理（不再 70007）；**入站 auto-recover 不得**据此清除自动栅栏。本地已是 HUMAN/WAITING 时发送仍拦截。其它 errcode / 网络错误不变。**严禁生产开启**。 |
 | `wecom.handover_phrase` | 入站口令精确匹配（默认 `转人工`）；命中后走与后台相同的转人工 |
-| `wecom.handover_welcome` | `send_msg_on_event` 转接话术（默认「正在为您转接人工客服，请稍候…」） |
+| `wecom.handover_welcome` | 旧版单句排队话术；若设置了 `handover_scripts.queue` 则以后者为准 |
+| `wecom.handover_scripts.queue` | `trans→2` 后 `send_msg_on_event` 排队提示（默认「正在为您转接人工客服，请稍候…」） |
+| `wecom.handover_scripts.human` | 接入提示文案（可配；本阶段转人工路径不发送） |
+| `wecom.handover_scripts.end` | 结束/回切话术（可配；阶段3 再接线，本 PR 不发送） |
 
 ## 2.1 管理后台在线保存（系统设置页）
 

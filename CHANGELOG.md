@@ -3,6 +3,7 @@
 本文件记录项目各版本的主要变更，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。每个发布版本必须在此有对应小节，发布流程会将该小节作为 GitHub Release 说明（见 README“发布流程”）。
 
 ## [未发布]
+- 转接话术：`wecom.handover_scripts` 三句可配（queue/human/end）；设置页可热加载；仅 queue 在 `trans→2` 的 `msg_code`→`send_msg_on_event` 发送，end 留阶段3。
 
 ### 修复
 
