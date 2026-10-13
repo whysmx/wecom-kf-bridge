@@ -216,44 +216,50 @@ func TestRecoverCustomerNotFound(t *testing.T) {
 	}
 }
 
-// Unmapped official get → UNKNOWN mapped → still end→4 (never →1).
-func TestRecoverUnmappedOfficialStillEndsTo4(t *testing.T) {
+// Unmapped official get → UNKNOWN: refuse recover (no unsafe 2→4), never →1.
+func TestRecoverUnmappedOfficialRefuses(t *testing.T) {
 	e := newEnv(t)
 	cl := e.login()
 	cu := putHuman(t, e, cl)
 	e.kf.mu.Lock()
 	e.kf.states["ext-secret-id"] = 9 // not in ServiceStateMap
 	e.kf.mu.Unlock()
+	before := len(e.kf.calls)
 	cl.post("/admin/customers/"+e.cust.ID+"/recover", url.Values{"revision": {itoa64(cu.Revision)}})
 	nc := mustCustomer(t, e)
-	if nc.State != state.CustomerAIEligible || nc.OfficialStatus != state.CustomerClosed {
-		t.Fatalf("state=%s official=%s", nc.State, nc.OfficialStatus)
+	if nc.State != state.CustomerHuman || nc.Generation != cu.Generation {
+		t.Fatalf("must not local-recover on UNKNOWN official: state=%s gen=%d", nc.State, nc.Generation)
 	}
-	if e.kf.count("trans:ext-secret-id:4") == 0 {
-		t.Fatalf("unmapped must still end→4: %v", e.kf.calls)
+	if !strings.Contains(cl.flash(), "UNKNOWN") {
+		t.Fatalf("flash=%q", cl.flash())
 	}
-	if e.kf.count("trans:ext-secret-id:1") != 0 {
-		t.Fatalf("never →1: %v", e.kf.calls)
+	for _, c := range e.kf.calls[before:] {
+		if strings.HasPrefix(c, "trans:") {
+			t.Fatalf("must not trans on unmapped official: %v", e.kf.calls[before:])
+		}
 	}
 }
 
-// Definitive end→4 reject includes 2→3→4 fallback hint; state unchanged; no →1.
-func TestRecoverEndRejectedReportsNoServicerFallback(t *testing.T) {
+// WAITING recover: definitive 2→3 reject keeps local human; no →4/→1.
+func TestRecoverWaitingTrans3Rejected(t *testing.T) {
 	e := newEnv(t)
 	cl := e.login()
-	cu := putHuman(t, e, cl)
+	cu := putHuman(t, e, cl) // official WAITING(2); harness servicer=WenHaiYan
 	e.kf.transErr = &wecom.APIError{Code: 95014, Message: "no permission"}
+	before := len(e.kf.calls)
 	cl.post("/admin/customers/"+e.cust.ID+"/recover", url.Values{"revision": {itoa64(cu.Revision)}})
 	got := mustCustomer(t, e)
 	if got.State != state.CustomerHuman || got.Generation != cu.Generation {
 		t.Fatalf("rejected recover must not change local: %+v", got)
 	}
 	flash := cl.flash()
-	if !strings.Contains(flash, "官方结束被拒") || !strings.Contains(flash, "2→3→4") {
+	if !strings.Contains(flash, "2→3") {
 		t.Fatalf("flash=%q", flash)
 	}
-	if e.kf.count("trans:ext-secret-id:1") != 0 {
-		t.Fatalf("never →1: %v", e.kf.calls)
+	for _, c := range e.kf.calls[before:] {
+		if c == "trans:ext-secret-id:4" || strings.HasPrefix(c, "trans:ext-secret-id:1") {
+			t.Fatalf("must not →4/→1 after 2→3 reject: %v", e.kf.calls[before:])
+		}
 	}
 }
 
