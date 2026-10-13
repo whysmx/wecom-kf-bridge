@@ -60,3 +60,30 @@ func TestClearAutoFenceInPlace(t *testing.T) {
 		t.Fatalf("%+v gen %d→%d", after, before.Generation, after.Generation)
 	}
 }
+
+func TestMarkManualFence(t *testing.T) {
+	st, err := OpenWithOptions(t.TempDir()+"/mmf.db", Options{MasterKey: bytes.Repeat([]byte{5}, 32)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	ctx := context.Background()
+	_ = st.PutEnterprise(ctx, Enterprise{ID: "e1", TenantID: "t", CorpID: "c", CredentialRef: "r"})
+	_ = st.PutBinding(ctx, Binding{ID: "b1", EnterpriseID: "e1", OpenKfID: "kf", ProjectID: "p", Active: true})
+	c, err := st.EnsureCustomer(ctx, "e1", "b1", "ext-mmf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nc, err := st.MarkManualFence(ctx, c.ID, "compensate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nc.FenceSource != FenceManual || nc.State != CustomerAIEligible {
+		t.Fatalf("%+v", nc)
+	}
+	// outbox must treat as held
+	_, err = st.CreateOutbox(ctx, OutboxMessage{CustomerID: c.ID, Generation: nc.Generation, UID: nc.UID, Body: "x", BudgetUnits: 1, ChunksTotal: 1})
+	if !errors.Is(err, ErrHeld) {
+		t.Fatalf("want ErrHeld got %v", err)
+	}
+}

@@ -421,7 +421,8 @@ func TestInboundHandoverPhraseFailureHeld(t *testing.T) {
 	}
 }
 
-func TestRequestHumanHandoverBeginHandoverFails(t *testing.T) {
+// P1-1: official trans→2 OK but BeginHandover blocked → MarkManualFence compensates.
+func TestRequestHumanHandoverBeginHandoverFailsCompensatesManual(t *testing.T) {
 	st, err := state.OpenWithOptions(t.TempDir()+"/h3.db", state.Options{MasterKey: bytes.Repeat([]byte{9}, 32)})
 	if err != nil {
 		t.Fatal(err)
@@ -434,14 +435,23 @@ func TestRequestHumanHandoverBeginHandoverFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Block BeginHandover's state update; MarkManualFence only touches fence_source.
 	st.DB().Exec(`CREATE TRIGGER bh_fail BEFORE UPDATE OF state ON customers BEGIN SELECT RAISE(ABORT,'x'); END`)
 	ad := &handoverFakeAdapter{}
-	if err := RequestHumanHandover(ctx, st, ad, bridge.Binding{ID: "b1"}, c, HandoverConfig{}, "phrase"); err == nil {
-		t.Fatal("want begin fail")
+	if err := RequestHumanHandover(ctx, st, ad, bridge.Binding{ID: "b1"}, c, HandoverConfig{}, "phrase"); err != nil {
+		t.Fatalf("compensate should succeed: %v", err)
+	}
+	if len(ad.trans) != 1 || ad.trans[0] != bridge.OfficialStateWaiting {
+		t.Fatalf("trans %v", ad.trans)
+	}
+	got, _ := st.Customer(ctx, c.ID)
+	if got.FenceSource != state.FenceManual {
+		t.Fatalf("want manual fence after compensate, got %q state=%s", got.FenceSource, got.State)
 	}
 }
 
-func TestInboundOfficialStateErrorContinues(t *testing.T) {
+// P1-2: OfficialState query failure must fail-closed (HELD), not deliver to AI.
+func TestInboundOfficialStateErrorFailClosed(t *testing.T) {
 	st, c := unitStore(t)
 	ctx := context.Background()
 	_ = st.SetCustomerAuthorized(ctx, c.ID, true)
@@ -449,9 +459,10 @@ func TestInboundOfficialStateErrorContinues(t *testing.T) {
 	var posts int32
 	cc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { atomic.AddInt32(&posts, 1) }))
 	t.Cleanup(cc.Close)
+	l := &recLogger{}
 	d := &DeliveryWorker{
 		Store: st, Server: srv, CallbackURL: map[string]string{"b1": cc.URL}, AgentID: map[string]string{},
-		HTTP: cc.Client(), MaxAttempts: 3, MaxConc: 1, Logger: nopRuntimeLogger{},
+		HTTP: cc.Client(), MaxAttempts: 3, MaxConc: 1, Logger: l,
 		OfficialState:  func(context.Context, string, state.Customer) (string, error) { return "", errBoomRT },
 		ForceTransToAI: func(context.Context, string, state.Customer, string) error { t.Fatal("no force"); return nil },
 	}
@@ -463,7 +474,54 @@ func TestInboundOfficialStateErrorContinues(t *testing.T) {
 		t.Fatal(err)
 	}
 	d.DeliverOnce(ctx)
-	if atomic.LoadInt32(&posts) != 1 {
-		t.Fatalf("posts=%d", posts)
+	m, _ := st.InboxByExternalID(ctx, "sc", "oserr")
+	if m.State != state.InboxHeld || atomic.LoadInt32(&posts) != 0 {
+		t.Fatalf("want HELD fail-closed: state=%s posts=%d", m.State, posts)
+	}
+	if !l.has("handover_inbound_official_state_failed") {
+		t.Fatal("expected official_state_failed log")
+	}
+}
+
+// Compensated manual fence (AI state + manual) must not ForceTrans→1 and must HELD.
+func TestInboundCompensatedManualFenceBlocksForceTrans(t *testing.T) {
+	st, c := unitStore(t)
+	ctx := context.Background()
+	_ = st.SetCustomerAuthorized(ctx, c.ID, true)
+	if _, err := st.MarkManualFence(ctx, c.ID, "phrase_compensate"); err != nil {
+		t.Fatal(err)
+	}
+	srv, _ := bridge.NewServer(bridge.Config{Store: st, Bindings: []bridge.Binding{{ID: "b1", CorpID: "v", CallbackToken: "t", CallbackAESKey: key43(4), Enabled: true}}})
+	var posts, trans int32
+	cc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { atomic.AddInt32(&posts, 1) }))
+	t.Cleanup(cc.Close)
+	d := &DeliveryWorker{
+		Store: st, Server: srv, CallbackURL: map[string]string{"b1": cc.URL}, AgentID: map[string]string{},
+		HTTP: cc.Client(), MaxAttempts: 3, MaxConc: 1, Logger: nopRuntimeLogger{},
+		OfficialState: func(context.Context, string, state.Customer) (string, error) {
+			return state.CustomerHuman, nil
+		},
+		ForceTransToAI: func(context.Context, string, state.Customer, string) error {
+			atomic.AddInt32(&trans, 1)
+			return nil
+		},
+	}
+	before, _ := st.Customer(ctx, c.ID)
+	if before.FenceSource != state.FenceManual || before.State != state.CustomerAIEligible {
+		t.Fatalf("precondition %+v", before)
+	}
+	if _, err := st.CommitSyncPage(ctx, "sc", "comp1", false, []state.InboxMessage{{
+		BindingID: "b1", ExternalMsgID: "comp1", CustomerID: c.ID, Generation: before.Generation,
+		Type: "text", PayloadRef: "q", CreateTime: time.Now(),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	d.DeliverOnce(ctx)
+	m, _ := st.InboxByExternalID(ctx, "sc", "comp1")
+	if atomic.LoadInt32(&trans) != 0 {
+		t.Fatal("must not ForceTrans when compensated manual")
+	}
+	if m.State != state.InboxHeld || atomic.LoadInt32(&posts) != 0 {
+		t.Fatalf("state=%s posts=%d", m.State, posts)
 	}
 }

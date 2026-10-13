@@ -287,8 +287,14 @@ func (d *DeliveryWorker) pullBackOfficialHumanIfNeeded(ctx context.Context, c st
 	}
 	st, err := d.OfficialState(ctx, m.BindingID, c)
 	if err != nil {
-		// Cannot decide; leave eligibility / autoRecover to fail closed.
-		return c, true
+		// Align with send ensureAIEligibleForSend: query failure is fail-closed
+		// (do not deliver to AI while official state is unknown).
+		if d.Logger != nil {
+			d.Logger.Log("handover_inbound_official_state_failed", map[string]any{
+				"customer_id": c.ID, "binding_id": m.BindingID, "error": err.Error(),
+			})
+		}
+		return c, false
 	}
 	if st != state.CustomerWaitingHuman && st != state.CustomerHuman {
 		return c, true
@@ -430,12 +436,12 @@ func (d *DeliveryWorker) deliver(ctx context.Context, m state.InboxMessage) bool
 	var ok bool
 	c, ok = d.pullBackOfficialHumanIfNeeded(ctx, c, m)
 	if !ok {
-		return step(state.InboxHeld, "force_trans_ai_failed")
+		return step(state.InboxHeld, "inbound_ai_gate_failed")
 	}
 	if c.State != state.CustomerAIEligible && c.FenceSource == state.FenceAuto && c.Authorized && c.Generation == m.Generation {
 		c, m = d.autoRecover(ctx, c, m)
 	}
-	if c.State != state.CustomerAIEligible || !c.Authorized || c.Generation != m.Generation {
+	if c.FenceSource == state.FenceManual || c.State != state.CustomerAIEligible || !c.Authorized || c.Generation != m.Generation {
 		return step(state.InboxHeld, "customer_not_eligible")
 	}
 	if m.CreateTime.IsZero() {

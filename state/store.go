@@ -825,6 +825,40 @@ func (s *Store) BeginHandover(ctx context.Context, customerID, reason string) (C
 	return c, nil
 }
 
+// MarkManualFence plants fence_source=manual without requiring a state change.
+// Used as compensation when BeginHandover fails after an official trans→2
+// succeeded: inbound must not ForceTrans→1, and send/delivery treat manual
+// as held even if state is still AI_ELIGIBLE.
+func (s *Store) MarkManualFence(ctx context.Context, customerID, reason string) (Customer, error) {
+	defer s.lock("customer:" + customerID)()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Customer{}, err
+	}
+	defer tx.Rollback()
+	c, err := scanCustomer(tx.QueryRowContext(ctx, `SELECT `+customerCols+` FROM customers WHERE id=?`, customerID))
+	if err != nil {
+		return Customer{}, mapNotFound(err)
+	}
+	now := s.now()
+	// Only touch fence_source / fence_generation / revision — not state — so
+	// this can succeed when a state-column trigger blocks BeginHandover.
+	if _, err = tx.ExecContext(ctx, `UPDATE customers SET fence_source=?,fence_generation=?,revision=revision+1,updated_at=? WHERE id=?`, FenceManual, c.Generation, unix(now), customerID); err != nil {
+		return Customer{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO handover_events(customer_id,old_generation,state,reason,created_at) VALUES(?,?,?,?,?)`, customerID, c.Generation, c.State, reason, unix(now)); err != nil {
+		return Customer{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return Customer{}, err
+	}
+	c.FenceSource = FenceManual
+	c.FenceGeneration = c.Generation
+	c.Revision++
+	c.UpdatedAt = now
+	return c, nil
+}
+
 // SetHandoverStatus records a known official status. Unknown and query errors
 // are intentionally safe: they keep the customer from being AI eligible.
 func (s *Store) SetHandoverStatus(ctx context.Context, customerID, status, reason string) error {
@@ -1269,9 +1303,10 @@ func (s *Store) outboxEligibility(ctx context.Context, tx *sql.Tx, c Customer, o
 	if c.Generation != o.Generation || c.UID != o.UID {
 		return ErrStaleGeneration, BlockStale, nil
 	}
-	// Takeover fence: any non-AI state (set together with the fence by
-	// BeginHandover/SetHandoverStatus) blocks this generation.
-	if c.State != CustomerAIEligible || c.FenceGeneration > c.Generation {
+	// Takeover fence: any non-AI state OR an explicit manual fence (even if
+	// state is still AI_ELIGIBLE after a compensated MarkManualFence) blocks
+	// this generation.
+	if c.FenceSource == FenceManual || c.State != CustomerAIEligible || c.FenceGeneration > c.Generation {
 		return ErrHeld, BlockHeld, nil
 	}
 	if !c.Authorized {

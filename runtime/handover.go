@@ -43,6 +43,9 @@ func MatchHandoverPhrase(cfg HandoverConfig, content string) bool {
 // RequestHumanHandover performs the intentional handoff:
 // official trans → WAITING (2), optional send_msg_on_event, then local
 // BeginHandover (manual fence). Does not delete servicers.
+//
+// P1: if official trans→2 succeeded but BeginHandover fails, compensate with
+// MarkManualFence so inbound pullBack will not ForceTrans→1 and AI stays paused.
 func RequestHumanHandover(ctx context.Context, store *state.Store, ad bridge.Adapter, b bridge.Binding, c state.Customer, cfg HandoverConfig, reason string) error {
 	cust := bridge.Customer{ID: c.ID, BindingID: c.BindingID, ExternalUserID: c.ExternalUserID, UserID: c.UID}
 	msgCode, err := ad.TransServiceState(ctx, b, cust, bridge.OfficialStateWaiting)
@@ -53,7 +56,12 @@ func RequestHumanHandover(ctx context.Context, store *state.Store, ad bridge.Ada
 		_ = ad.SendMsgOnEvent(ctx, b, msgCode, cfg.welcome())
 	}
 	if _, err := store.BeginHandover(ctx, c.ID, reason); err != nil {
-		return err
+		// Official already WAITING: must plant manual intent before returning.
+		if _, cerr := store.MarkManualFence(ctx, c.ID, reason+"_compensate"); cerr != nil {
+			return err
+		}
+		_ = store.SetOfficialStatus(ctx, c.ID, state.CustomerWaitingHuman)
+		return nil
 	}
 	// Prefer HUMAN if a later get would show 3; WAITING is enough for the fence.
 	_ = store.SetHandoverStatus(ctx, c.ID, state.CustomerWaitingHuman, reason)
