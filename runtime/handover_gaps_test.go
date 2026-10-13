@@ -43,18 +43,18 @@ func TestRequestHumanHandoverEmptyMsgCodeSkipsEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 	ad := &emptyMsgCodeAdapter{}
-	if err := RequestHumanHandover(ctx, st, ad, bridge.Binding{ID: "b1"}, c, HandoverConfig{Welcome: "自定义欢迎"}, "phrase"); err != nil {
+	if err := RequestHumanHandover(ctx, st, ad, bridge.Binding{ID: "b1", ServicerUserID: "WenHaiYan"}, c, HandoverConfig{Welcome: "自定义欢迎"}, "phrase"); err != nil {
 		t.Fatal(err)
 	}
-	if len(ad.trans) != 1 || ad.trans[0] != bridge.OfficialStateWaiting {
-		t.Fatalf("want trans→2, got %v", ad.trans)
+	if len(ad.trans) != 1 || ad.trans[0] != bridge.OfficialStateHuman {
+		t.Fatalf("want trans→3, got %v", ad.trans)
 	}
 	if ad.eventN != 0 {
 		t.Fatalf("empty msg_code must skip send_msg_on_event, got %d", ad.eventN)
 	}
 	got, _ := st.Customer(ctx, c.ID)
-	if got.FenceSource != state.FenceManual || got.State != state.CustomerWaitingHuman {
-		t.Fatalf("want manual WAITING, got %s/%s", got.State, got.FenceSource)
+	if got.FenceSource != state.FenceManual || got.State != state.CustomerHuman {
+		t.Fatalf("want manual HUMAN, got %s/%s", got.State, got.FenceSource)
 	}
 }
 
@@ -73,7 +73,7 @@ func TestRequestHumanHandoverCustomWelcome(t *testing.T) {
 	}
 	ad := &handoverFakeAdapter{}
 	cfg := HandoverConfig{Welcome: "  请稍等人工  "}
-	if err := RequestHumanHandover(ctx, st, ad, bridge.Binding{ID: "b1"}, c, cfg, "phrase"); err != nil {
+	if err := RequestHumanHandover(ctx, st, ad, bridge.Binding{ID: "b1", ServicerUserID: "WenHaiYan"}, c, cfg, "phrase"); err != nil {
 		t.Fatal(err)
 	}
 	if len(ad.events) != 1 || ad.events[0] != "code-1|请稍等人工" {
@@ -98,10 +98,10 @@ func TestInboundPhraseThenManualFenceBlocksPullBack(t *testing.T) {
 		HTTP: cc.Client(), MaxAttempts: 3, MaxConc: 1, Logger: nopRuntimeLogger{},
 		HandoverPhrase: "转人工",
 		OnHandoverPhrase: func(ctx context.Context, cu state.Customer, m state.InboxMessage) error {
-			return RequestHumanHandover(ctx, st, ad, bridge.Binding{ID: "b1"}, cu, HandoverConfig{}, "phrase_handover")
+			return RequestHumanHandover(ctx, st, ad, bridge.Binding{ID: "b1", ServicerUserID: "WenHaiYan"}, cu, HandoverConfig{}, "phrase_handover")
 		},
 		OfficialState: func(context.Context, string, state.Customer) (string, error) {
-			return state.CustomerWaitingHuman, nil
+			return state.CustomerHuman, nil
 		},
 		ForceTransToAI: func(context.Context, string, state.Customer, string) error {
 			atomic.AddInt32(&forceN, 1)
@@ -121,8 +121,8 @@ func TestInboundPhraseThenManualFenceBlocksPullBack(t *testing.T) {
 	if m1.State != state.InboxHeld || atomic.LoadInt32(&posts) != 0 {
 		t.Fatalf("phrase: state=%s posts=%d", m1.State, posts)
 	}
-	if len(ad.trans) != 1 || ad.trans[0] != bridge.OfficialStateWaiting {
-		t.Fatalf("phrase must trans→2, got %v", ad.trans)
+	if len(ad.trans) != 1 || ad.trans[0] != bridge.OfficialStateHuman {
+		t.Fatalf("phrase must trans→3, got %v", ad.trans)
 	}
 	cu, _ := st.Customer(ctx, c.ID)
 	if cu.FenceSource != state.FenceManual {

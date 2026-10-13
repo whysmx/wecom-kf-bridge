@@ -479,7 +479,14 @@ func (c *Console) mapped(n int) string {
 // servicerUserID is required when internal is HUMAN (→3); empty otherwise.
 // It returns the confirmed internal state, whether the official result is
 // certain, and a definitive rejection (nothing changed upstream).
+// eventText, when non-empty, is sent via send_msg_on_event on success (used
+// for intentional handoff tip). Closed still sends HandoverEndScript when
+// eventText is empty.
 func (c *Console) transfer(r *http.Request, cu state.Customer, internal, servicerUserID string, accept ...string) (string, bool, error) {
+	return c.transferEvent(r, cu, internal, servicerUserID, "", accept...)
+}
+
+func (c *Console) transferEvent(r *http.Request, cu state.Customer, internal, servicerUserID, eventText string, accept ...string) (string, bool, error) {
 	target, ok := c.officialTarget(internal)
 	if !ok {
 		return "", true, errors.New("service_state_map 未配置 " + internal + " 对应的官方状态")
@@ -495,17 +502,15 @@ func (c *Console) transfer(r *http.Request, cu state.Customer, internal, service
 		}
 		return "", false, nil
 	}
-	// Event phrases: queue tip on intentional handoff (trans→2); end tip on recover (trans→4).
+	// Event phrases: explicit eventText (intentional handoff tip on →3);
+	// end tip on recover (trans→4) when eventText empty.
 	if msgCode != "" {
-		switch internal {
-		case state.CustomerWaitingHuman:
-			if w := strings.TrimSpace(c.cfg.HandoverWelcome); w != "" {
-				_ = c.cfg.KF.SendMsgOnEvent(r.Context(), msgCode, w)
-			}
-		case state.CustomerClosed:
-			if w := strings.TrimSpace(c.cfg.HandoverEndScript); w != "" {
-				_ = c.cfg.KF.SendMsgOnEvent(r.Context(), msgCode, w)
-			}
+		text := strings.TrimSpace(eventText)
+		if text == "" && internal == state.CustomerClosed {
+			text = strings.TrimSpace(c.cfg.HandoverEndScript)
+		}
+		if text != "" {
+			_ = c.cfg.KF.SendMsgOnEvent(r.Context(), msgCode, text)
 		}
 	}
 	got, err := c.cfg.KF.ServiceState(r.Context(), b.OpenKfID, cu.ExternalUserID)
@@ -521,9 +526,10 @@ func (c *Console) transfer(r *http.Request, cu state.Customer, internal, service
 	return m, false, nil
 }
 
-// customerHandover transfers the session officially first and only then
-// pauses AI locally. If the official result is uncertain, AI is paused
-// (fail-safe) and the customer is marked UNKNOWN.
+// customerHandover transfers officially to HUMAN(3) with servicer_userid,
+// sends the transfer tip, then pauses AI locally (manual fence). Stops at 3
+// — does not auto →4. Missing servicer → 未配置接待人. If the official result
+// is uncertain, AI is paused (fail-safe) and the customer is marked UNKNOWN.
 //
 // When the official side already succeeded but local SQLite writes fail
 // (including SQLITE_BUSY / BUSY_SNAPSHOT 517), return 503 with an explicit
@@ -534,7 +540,18 @@ func (c *Console) customerHandover(r *http.Request, _ *session) result {
 	if res != nil {
 		return *res
 	}
-	official, certain, rejected := c.transfer(r, cu, state.CustomerWaitingHuman, "", state.CustomerWaitingHuman, state.CustomerHuman)
+	if _, err := c.cfg.Store.Binding(r.Context(), cu.BindingID); err != nil {
+		c.audit(r, "customer", cu.ID, "handover", "rejected", "绑定不存在", cu.Revision)
+		return result{location: "/admin/customers?q=" + cu.ID, flash: "转人工失败（官方未变更）：绑定不存在"}
+	}
+	sid := c.bindingServicerUserID(cu.BindingID)
+	if sid == "" {
+		detail := "未配置接待人"
+		c.audit(r, "customer", cu.ID, "handover", "rejected", detail, cu.Revision)
+		return result{location: "/admin/customers?q=" + cu.ID, flash: "转人工失败：" + detail + "（请在绑定配置填写 servicer_userid）"}
+	}
+	welcome := strings.TrimSpace(c.cfg.HandoverWelcome)
+	official, certain, rejected := c.transferEvent(r, cu, state.CustomerHuman, sid, welcome, state.CustomerHuman)
 	if rejected != nil {
 		c.audit(r, "customer", cu.ID, "handover", "rejected", rejected.Error(), cu.Revision)
 		return result{location: "/admin/customers?q=" + cu.ID, flash: "转人工失败（官方未变更）：" + rejected.Error()}

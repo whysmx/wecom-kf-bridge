@@ -12,7 +12,7 @@ import (
 	"github.com/whysmx/wecom-kf-bridge/wecom"
 )
 
-// putHuman runs confirmed handover so local is HUMAN and official WAITING (2).
+// putHuman runs confirmed handover so local is HUMAN and official HUMAN (3).
 func putHuman(t *testing.T, e *env, cl *client) state.Customer {
 	t.Helper()
 	path := "/admin/customers/" + e.cust.ID
@@ -40,7 +40,7 @@ func TestRecoverEndsOfficial2And3To4NeverTo1(t *testing.T) {
 			})
 			cl := e.login()
 			cu := putHuman(t, e, cl)
-			// After handover official is 2; optionally promote to 3.
+			// putHuman leaves official at 3; override for waiting2 / human3 cases.
 			e.kf.mu.Lock()
 			e.kf.states["ext-secret-id"] = official.code
 			e.kf.mu.Unlock()
@@ -244,7 +244,10 @@ func TestRecoverUnmappedOfficialRefuses(t *testing.T) {
 func TestRecoverWaitingTrans3Rejected(t *testing.T) {
 	e := newEnv(t)
 	cl := e.login()
-	cu := putHuman(t, e, cl) // official WAITING(2); harness servicer=WenHaiYan
+	cu := putHuman(t, e, cl)
+	e.kf.mu.Lock()
+	e.kf.states["ext-secret-id"] = 2 // stuck WAITING without handoff intent path
+	e.kf.mu.Unlock()
 	e.kf.transErr = &wecom.APIError{Code: 95014, Message: "no permission"}
 	before := len(e.kf.calls)
 	cl.post("/admin/customers/"+e.cust.ID+"/recover", url.Values{"revision": {itoa64(cu.Revision)}})
@@ -263,13 +266,35 @@ func TestRecoverWaitingTrans3Rejected(t *testing.T) {
 	}
 }
 
-// Handover queue tip still fires on trans→2 when welcome configured.
-func TestHandoverWelcomeSentOnTransToWaiting(t *testing.T) {
+// Handover transfer tip still fires on trans→3 when welcome configured.
+func TestHandoverWelcomeSentOnTransToHuman(t *testing.T) {
 	e := newEnv(t, func(c *Config) { c.HandoverWelcome = "请稍候接入" })
 	cl := e.login()
 	cl.post("/admin/customers/"+e.cust.ID+"/handover", rev(t, e))
+	if e.kf.count("trans:ext-secret-id:3:WenHaiYan") == 0 {
+		t.Fatalf("handover must trans→3 with servicer: %v", e.kf.calls)
+	}
 	if e.kf.count("event:msg-code-admin:请稍候接入") == 0 {
 		t.Fatalf("welcome not sent: %v", e.kf.calls)
+	}
+}
+
+func TestHandoverWithoutServicerFails(t *testing.T) {
+	e := newEnv(t)
+	e.rt.configBindings[0].ServicerUserID = ""
+	cl := e.login()
+	before := len(e.kf.calls)
+	cl.post("/admin/customers/"+e.cust.ID+"/handover", rev(t, e))
+	if !strings.Contains(cl.flash(), "未配置接待人") {
+		t.Fatalf("flash=%q", cl.flash())
+	}
+	if mustCustomer(t, e).State != state.CustomerAIEligible {
+		t.Fatal("local must stay AI without servicer")
+	}
+	for _, c := range e.kf.calls[before:] {
+		if strings.HasPrefix(c, "trans:") {
+			t.Fatalf("must not trans without servicer: %v", e.kf.calls[before:])
+		}
 	}
 }
 
@@ -278,6 +303,9 @@ func TestRecoverWaitingTrans4RejectedAfter3(t *testing.T) {
 	e := newEnv(t)
 	cl := e.login()
 	cu := putHuman(t, e, cl)
+	e.kf.mu.Lock()
+	e.kf.states["ext-secret-id"] = 2
+	e.kf.mu.Unlock()
 	e.kf.transErrFor = map[int]error{4: &wecom.APIError{Code: 95014, Message: "no permission"}}
 	before1 := e.kf.count("trans:ext-secret-id:1")
 	cl.post("/admin/customers/"+e.cust.ID+"/recover", url.Values{"revision": {itoa64(cu.Revision)}})
@@ -301,6 +329,9 @@ func TestRecoverWaitingTrans4UncertainAfter3(t *testing.T) {
 	e := newEnv(t)
 	cl := e.login()
 	cu := putHuman(t, e, cl)
+	e.kf.mu.Lock()
+	e.kf.states["ext-secret-id"] = 2
+	e.kf.mu.Unlock()
 	e.kf.stuckFor = map[int]bool{4: true}
 	cl.post("/admin/customers/"+e.cust.ID+"/recover", url.Values{"revision": {itoa64(cu.Revision)}})
 	got := mustCustomer(t, e)
@@ -371,9 +402,12 @@ func TestRecoverHumanTrans4Uncertain(t *testing.T) {
 // bindingServicerUserID miss (binding id not in live config) → 未配置接待人.
 func TestRecoverWaitingServicerBindingNotInConfig(t *testing.T) {
 	e := newEnv(t)
-	e.rt.configBindings[0].ID = "not-b1"
 	cl := e.login()
 	cu := putHuman(t, e, cl)
+	e.rt.configBindings[0].ID = "not-b1"
+	e.kf.mu.Lock()
+	e.kf.states["ext-secret-id"] = 2
+	e.kf.mu.Unlock()
 	before := len(e.kf.calls)
 	cl.post("/admin/customers/"+e.cust.ID+"/recover", url.Values{"revision": {itoa64(cu.Revision)}})
 	if !strings.Contains(cl.flash(), "未配置接待人") {

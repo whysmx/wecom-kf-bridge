@@ -31,9 +31,10 @@ func TestMatchHandoverPhraseExactTrim(t *testing.T) {
 
 type handoverFakeAdapter struct {
 	bridge.Adapter
-	trans  []int
-	events []string
-	svc    string
+	trans        []int
+	events       []string
+	svc          string
+	lastServicer string
 }
 
 func (a *handoverFakeAdapter) ServiceState(context.Context, bridge.Binding, bridge.Customer) (string, error) {
@@ -42,8 +43,12 @@ func (a *handoverFakeAdapter) ServiceState(context.Context, bridge.Binding, brid
 	}
 	return a.svc, nil
 }
-func (a *handoverFakeAdapter) TransServiceState(_ context.Context, _ bridge.Binding, _ bridge.Customer, st int, _ string) (string, error) {
+func (a *handoverFakeAdapter) TransServiceState(_ context.Context, b bridge.Binding, _ bridge.Customer, st int, servicer string) (string, error) {
 	a.trans = append(a.trans, st)
+	a.lastServicer = servicer
+	if servicer == "" {
+		a.lastServicer = b.ServicerUserID
+	}
 	if st == bridge.OfficialStateWaiting {
 		a.svc = state.CustomerWaitingHuman
 	}
@@ -86,18 +91,44 @@ func TestRequestHumanHandoverSetsManualFence(t *testing.T) {
 		t.Fatal(err)
 	}
 	ad := &handoverFakeAdapter{}
-	if err := RequestHumanHandover(ctx, st, ad, bridge.Binding{ID: "b1"}, c, HandoverConfig{}, "phrase_handover"); err != nil {
+	if err := RequestHumanHandover(ctx, st, ad, bridge.Binding{ID: "b1", ServicerUserID: "WenHaiYan"}, c, HandoverConfig{}, "phrase_handover"); err != nil {
 		t.Fatal(err)
 	}
-	if len(ad.trans) != 1 || ad.trans[0] != bridge.OfficialStateWaiting {
+	if len(ad.trans) != 1 || ad.trans[0] != bridge.OfficialStateHuman {
 		t.Fatalf("trans %v", ad.trans)
+	}
+	if ad.lastServicer != "WenHaiYan" {
+		t.Fatalf("servicer %q", ad.lastServicer)
 	}
 	if len(ad.events) != 1 || ad.events[0] != "code-1|"+defaultHandoverWelcome {
 		t.Fatalf("events %v", ad.events)
 	}
 	got, _ := st.Customer(ctx, c.ID)
-	if got.FenceSource != state.FenceManual || got.State != state.CustomerWaitingHuman {
+	if got.FenceSource != state.FenceManual || got.State != state.CustomerHuman {
 		t.Fatalf("%s/%s", got.State, got.FenceSource)
+	}
+}
+
+func TestRequestHumanHandoverMissingServicer(t *testing.T) {
+	st, err := state.OpenWithOptions(t.TempDir()+"/h-nosid.db", state.Options{MasterKey: bytes.Repeat([]byte{9}, 32)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	ctx := context.Background()
+	_ = st.PutEnterprise(ctx, state.Enterprise{ID: "e1", TenantID: "t", CorpID: "c", CredentialRef: "env:X"})
+	_ = st.PutBinding(ctx, state.Binding{ID: "b1", EnterpriseID: "e1", OpenKfID: "kf1", ProjectID: "p", Active: true})
+	c, err := st.EnsureCustomer(ctx, "e1", "b1", "ext-nosid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ad := &handoverFakeAdapter{}
+	err = RequestHumanHandover(ctx, st, ad, bridge.Binding{ID: "b1"}, c, HandoverConfig{}, "phrase")
+	if err == nil || err.Error() != "未配置接待人" {
+		t.Fatalf("want 未配置接待人, got %v", err)
+	}
+	if len(ad.trans) != 0 {
+		t.Fatalf("must not trans without servicer: %v", ad.trans)
 	}
 }
 
@@ -258,7 +289,7 @@ func TestRequestHumanHandoverTransFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	ad := &handoverFailTransAdapter{err: errBoomRT}
-	if err := RequestHumanHandover(ctx, st, ad, bridge.Binding{ID: "b1"}, c, HandoverConfig{}, "phrase"); err == nil {
+	if err := RequestHumanHandover(ctx, st, ad, bridge.Binding{ID: "b1", ServicerUserID: "WenHaiYan"}, c, HandoverConfig{}, "phrase"); err == nil {
 		t.Fatal("want trans err")
 	}
 }
@@ -427,7 +458,7 @@ func TestInboundHandoverPhraseFailureHeld(t *testing.T) {
 	}
 }
 
-// P1-1: official trans→2 OK but BeginHandover blocked → MarkManualFence compensates.
+// P1-1: official trans→3 OK but BeginHandover blocked → MarkManualFence compensates.
 func TestRequestHumanHandoverBeginHandoverFailsCompensatesManual(t *testing.T) {
 	st, err := state.OpenWithOptions(t.TempDir()+"/h3.db", state.Options{MasterKey: bytes.Repeat([]byte{9}, 32)})
 	if err != nil {
@@ -444,10 +475,10 @@ func TestRequestHumanHandoverBeginHandoverFailsCompensatesManual(t *testing.T) {
 	// Block BeginHandover's state update; MarkManualFence only touches fence_source.
 	st.DB().Exec(`CREATE TRIGGER bh_fail BEFORE UPDATE OF state ON customers BEGIN SELECT RAISE(ABORT,'x'); END`)
 	ad := &handoverFakeAdapter{}
-	if err := RequestHumanHandover(ctx, st, ad, bridge.Binding{ID: "b1"}, c, HandoverConfig{}, "phrase"); err != nil {
+	if err := RequestHumanHandover(ctx, st, ad, bridge.Binding{ID: "b1", ServicerUserID: "WenHaiYan"}, c, HandoverConfig{}, "phrase"); err != nil {
 		t.Fatalf("compensate should succeed: %v", err)
 	}
-	if len(ad.trans) != 1 || ad.trans[0] != bridge.OfficialStateWaiting {
+	if len(ad.trans) != 1 || ad.trans[0] != bridge.OfficialStateHuman {
 		t.Fatalf("trans %v", ad.trans)
 	}
 	got, _ := st.Customer(ctx, c.ID)

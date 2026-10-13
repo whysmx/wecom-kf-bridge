@@ -265,7 +265,7 @@ func TestAdminConsoleEndToEnd(t *testing.T) {
 		t.Fatal("config binding credentials")
 	}
 	// #33: handover/recover go through the official API and read back
-	// Use config binding b1 (servicer_userid required for WAITING 2→3→4).
+	// Use config binding b1 (servicer_userid required for intentional handoff →3).
 	cust, _ := g.Store.EnsureCustomer(context.Background(), "e1", "b1", "ext-e2e")
 	c.h = g.Admin
 	if w := c.do("GET", "/admin/", nil); w.Code != http.StatusSeeOther {
@@ -273,7 +273,7 @@ func TestAdminConsoleEndToEnd(t *testing.T) {
 	}
 	c = adminLogin(t, g.Admin)
 	c.post("/admin/customers/"+cust.ID+"/handover", url.Values{"revision": {strconv.FormatInt(cust.Revision, 10)}})
-	if cu, _ := g.Store.Customer(context.Background(), cust.ID); cu.State != "HUMAN" || cu.OfficialStatus != "WAITING_HUMAN" {
+	if cu, _ := g.Store.Customer(context.Background(), cust.ID); cu.State != "HUMAN" || cu.OfficialStatus != "HUMAN" {
 		t.Fatal("handover via official API", cu.State, cu.OfficialStatus)
 	}
 	cu, _ := g.Store.Customer(context.Background(), cust.ID)

@@ -265,6 +265,14 @@ func (g *Gateway) wire(ctx context.Context, cfg Config, logger Logger) error {
 			Welcome: g.liveCfg.WeCom.HandoverWelcome,
 			Scripts: g.liveCfg.WeCom.HandoverScripts,
 		}
+		for _, bc := range g.liveCfg.Bindings {
+			if bc.ID == m.BindingID {
+				if sid := strings.TrimSpace(bc.ServicerUserID); sid != "" {
+					vb.ServicerUserID = sid
+				}
+				break
+			}
+		}
 		g.cfgMu.RUnlock()
 		return RequestHumanHandover(ctx, st, adapter, vb, c, hcfg, "phrase_handover")
 	}
