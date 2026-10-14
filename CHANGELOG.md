@@ -3,19 +3,26 @@
 本文件记录项目各版本的主要变更，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。每个发布版本必须在此有对应小节，发布流程会将该小节作为 GitHub Release 说明（见 README“发布流程”）。
 
 ## [未发布]
-- 转接话术：`wecom.handover_scripts` 三句可配（queue/human/end）；设置页可热加载；仅 queue 在 `trans→2` 的 `msg_code`→`send_msg_on_event` 发送，end 留阶段3。
 
-### 修复
 
-- 依赖：`modernc.org/sqlite` v1.29.8 → **v1.60.1**（配套 `modernc.org/libc` v1.77.1）；含 WAL `-shm` 读故障不再进程崩溃、context 取消后 Rows 泄漏导致 checkpoint 饿死等修复。Go 工具链升至 **1.26**（驱动要求）。本地 `go test -race -count=20 ./admin ./state ./runtime` 压测通过（#6）。
-- 系统设置写回 `config.json`：Windows 上目标已存在时 `os.Rename` 会失败；改为 Remove+Rename 回退（`replaceFile`），并拒绝空/`{}` 的 `service_state_map` 以免误清空；热加载只调用一次 `ApplyEditableSettings`（#25 / #26）。
+## v0.1.11 - 2026-10-14
 
 ### 新增
 
-- 实验分支 `feat/human-handover`（#31）：无本地 manual 意图且官方 `service_state` 为 2/3 时，发前强制 `trans→1` 拉回 AI 再发；口令「转人工」与后台按钮同一套（`trans→2` + `send_msg_on_event` + manual 栅栏）；不删接待人、不改 `treat_48002` 旁路语义。
-- 管理后台绑定页：对 `config.json` 中已有绑定可在线编辑 `project_id` / `virtual_corp_id` / `agent_id` / `callback_url` / `disabled`，写回配置并热加载（CSRF + 二次认证）；身份字段与密钥 env 只读；审计 `config_save`（#29）。
-- 管理后台支持 `admin.listen` 绑定 `0.0.0.0`（须显式 `admin.origin` + `insecure_cookie` 方可明文 http）；新增 `admin.lan_no_login`（默认 `true`）：私网/回环客户端免密进控制台，CSRF/同源保护保留，免登会话跳过 step-up 输密，审计标明 `admin-lan@` / `lan_no_login`；非私网仍须密码登录。
-- 管理后台「系统设置」可在线保存：`wecom.treat_48002_as_ai_eligible`（二次认证 + 危险提示 + 强制审计）、`wecom.service_state_map`、`server.public_base_url`；写回 `config.json` 并热加载，无需重启；密钥类字段仍只显示环境变量名（#25）。
+- 转人工停在官方 `service_state=3`（HUMAN）：有转人工意图时不再自动 `3→4`，坐席可在企微客服工作台接待并回复（#41）。
+- 坐席结束接待：吃 `session_status_change`（结束）同步清本地 manual fence；入站若仍挂 fence 则 `service_state/get` 兜底，live∈{0,4} 对齐后可回 AI（#42）。
+- 绑定可配 `servicer_userid`；WAITING 解卡走官方 `2→3→4`（避免 `2→4` 触发 95016）（#39 / #40）。
+- 转接话术三句可配（`wecom.handover_scripts` queue/human/end），queue 经 `send_msg_on_event` 发送（#34）。
+- 无本地 manual 意图且官方落在 2/3 时，发前强制 `trans→1` 拉回 AI；口令/后台按钮才停 AI（#32）。
+
+### 修复
+
+- 后台恢复/结束路径：`officialTarget` 跳过无效 `0`，AI 优先选 `1`；recover 结束走 `end→4` 边界与覆盖补测（#35–#38）。
+
+### 现网
+
+- 功能基线含 #32–#42（人工停在 3、坐席结束清 fence）；真机整单 PASS（smoke-20261014-0925-h42，exe tip `b527c92`）。
+- 不改动 `treat_48002_as_ai_eligible` 默认语义。
 
 ## v0.1.7 - 2026-10-12
 
