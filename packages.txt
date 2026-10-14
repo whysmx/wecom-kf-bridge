@@ -1,6 +1,0 @@
-github.com/whysmx/wecom-kf-bridge
-github.com/whysmx/wecom-kf-bridge/admin
-github.com/whysmx/wecom-kf-bridge/cmd/wecom-kf-bridge
-github.com/whysmx/wecom-kf-bridge/runtime
-github.com/whysmx/wecom-kf-bridge/state
-github.com/whysmx/wecom-kf-bridge/wecom
