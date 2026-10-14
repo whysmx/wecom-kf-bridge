@@ -156,6 +156,8 @@ type Store interface {
 	SetHandoverStatus(context.Context, string, string, string) error
 	BeginHandover(context.Context, string, string) (state.Customer, error)
 	ClearAutoFenceInPlace(context.Context, string, string) (state.Customer, error)
+	// AppendChatTurn stores a local handover draft turn (user/AI); best-effort.
+	AppendChatTurn(ctx context.Context, customerID, role, msgType, content string, ttlDays int) error
 }
 
 // unavailableAdapter fails closed when no real adapter is configured; there
@@ -625,16 +627,9 @@ func (s *Server) send(ctx context.Context, b Binding, sc state.Customer, agent, 
 	return nil
 }
 
-// recordAIChatTurn appends an AI outbound draft when the store supports it.
+// recordAIChatTurn appends an AI outbound draft (best-effort; never fails the send).
 func (s *Server) recordAIChatTurn(ctx context.Context, customerID, content string) {
-	type chatWriter interface {
-		AppendChatTurn(context.Context, string, string, string, string, int) error
-	}
-	w, ok := s.cfg.Store.(chatWriter)
-	if !ok {
-		return
-	}
-	if err := w.AppendChatTurn(ctx, customerID, state.ChatRoleAI, "text", content, 0); err != nil && s.cfg.Logger != nil {
+	if err := s.cfg.Store.AppendChatTurn(ctx, customerID, state.ChatRoleAI, "text", content, 0); err != nil && s.cfg.Logger != nil {
 		s.cfg.Logger.Log("chat_context_append_failed", map[string]any{"customer_id": customerID, "role": state.ChatRoleAI, "error": err.Error()})
 	}
 }
