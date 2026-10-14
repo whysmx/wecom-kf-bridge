@@ -34,3 +34,25 @@ func TestClearManualFenceCompensatedAI(t *testing.T) {
 		t.Fatalf("%+v %v", nc, err)
 	}
 }
+
+func TestClearManualFenceAfterOfficialEndErrors(t *testing.T) {
+	s, c := faultStore(t)
+	ctx := context.Background()
+	_, err := s.ClearManualFenceAfterOfficialEnd(ctx, "missing", "x")
+	if err == nil {
+		t.Fatal("want not found")
+	}
+	// WAITING_HUMAN → clear to AI
+	if _, err := s.BeginHandover(ctx, c.ID, "phrase"); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.SetHandoverStatus(ctx, c.ID, CustomerWaitingHuman, "phrase")
+	nc, err := s.ClearManualFenceAfterOfficialEnd(ctx, c.ID, "from_waiting")
+	if err != nil || nc.FenceSource != "" || nc.State != CustomerAIEligible {
+		t.Fatalf("WAITING clear: %+v %v", nc, err)
+	}
+	s.Close()
+	if _, err := s.ClearManualFenceAfterOfficialEnd(ctx, c.ID, "closed"); err == nil {
+		t.Fatal("want closed store error")
+	}
+}

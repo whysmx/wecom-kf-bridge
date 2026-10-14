@@ -86,3 +86,64 @@ func TestClassifySessionEndForeignKf(t *testing.T) {
 		t.Fatalf("%+v", m)
 	}
 }
+
+func TestSessionEndChangeEdgeHelpers(t *testing.T) {
+	// non-event msgtype
+	if _, ok := (SyncMessage{MsgType: "text"}).SessionEndChange(); ok {
+		t.Fatal("text must not be session end")
+	}
+	// empty / bad event JSON → eventFields zero
+	empty := SyncMessage{MsgType: "event", Event: nil}
+	if ext, kf, code, ct := empty.eventFields(); ext != "" || kf != "" || code != "" || ct != 0 {
+		t.Fatalf("empty event: %q %q %q %d", ext, kf, code, ct)
+	}
+	bad := SyncMessage{MsgType: "event", Event: json.RawMessage(`{`)}
+	if _, _, _, ct := bad.eventFields(); ct != 0 {
+		t.Fatal(ct)
+	}
+	// top-level ids win over nested
+	m := SyncMessage{
+		MsgType: "event", ExternalUserID: "top-ext", OpenKfID: "top-kf",
+		Event: json.RawMessage(`{"event_type":"session_status_change","external_userid":"nest","open_kfid":"nest-kf","change_type":3}`),
+	}
+	if m.EffectiveExternalUserID() != "top-ext" || m.EffectiveOpenKfID() != "top-kf" {
+		t.Fatal(m.EffectiveExternalUserID(), m.EffectiveOpenKfID())
+	}
+}
+
+func TestClassifySessionEndMissingExternalUID(t *testing.T) {
+	st := syncStore(t)
+	body := `{"errcode":0,"next_cursor":"c","has_more":0,"msg_list":[
+		{"msgid":"no-ext","send_time":1,"origin":4,"msgtype":"event",
+		 "event":{"event_type":"session_status_change","open_kfid":"kf1","change_type":3}}
+	]}`
+	c := NewClient(rawServer(t, body).URL, "c", "s")
+	_, err := c.SyncAll(context.Background(), SyncOptions{
+		Scope: "sc", EnterpriseID: "e1", BindingID: "b1", OpenKfID: "kf1", AccessToken: "t",
+		Store: st, Origins: OriginPolicy{CustomerOrigins: []int{3}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, _ := st.InboxByExternalID(context.Background(), "sc", "no-ext")
+	if m.ErrorCategory != CategoryNoExternalUID {
+		t.Fatalf("%+v", m)
+	}
+}
+
+func TestClassifySessionEndEnsureCustomerFail(t *testing.T) {
+	st := syncStore(t)
+	st.Close()
+	body := `{"errcode":0,"next_cursor":"c","has_more":0,"msg_list":[
+		{"msgid":"ens-fail","send_time":1,"origin":4,"msgtype":"event",
+		 "event":{"event_type":"session_status_change","open_kfid":"kf1","external_userid":"ext","change_type":3}}
+	]}`
+	c := NewClient(rawServer(t, body).URL, "c", "s")
+	_, err := c.SyncAll(context.Background(), SyncOptions{
+		Scope: "sc", EnterpriseID: "e1", BindingID: "b1", OpenKfID: "kf1", AccessToken: "t",
+		Store: st, Origins: OriginPolicy{CustomerOrigins: []int{3}},
+	})
+	if err == nil {
+		t.Fatal("want EnsureCustomer error")
+	}
+}
