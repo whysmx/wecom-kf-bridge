@@ -277,6 +277,57 @@ func (g *Gateway) wire(ctx context.Context, cfg Config, logger Logger) error {
 		return RequestHumanHandover(ctx, st, adapter, vb, c, hcfg, "phrase_handover")
 	}
 	g.Sync.OnSynced = g.Delivery.Kick
+	// session_status_change change_type=3: local align only (clear manual fence).
+	// Never trans 3→4 here. Optional msg_code end tip; failure does not block.
+	g.Sync.OnSessionEnd = func(ctx context.Context, ev wecom.SessionEndEvent) {
+		cust, err := st.Customer(ctx, ev.CustomerID)
+		if err != nil {
+			logger.Log("session_end_customer_missing", map[string]any{"customer_id": ev.CustomerID, "msgid": ev.MsgID, "error": err.Error()})
+			return
+		}
+		b := bridge.Binding{ID: ev.BindingID}
+		if vb, ok := g.vbs[ev.BindingID]; ok {
+			b = vb
+		}
+		mapped, gerr := adapter.ServiceState(ctx, b, bridge.Customer{ExternalUserID: cust.ExternalUserID})
+		if gerr != nil {
+			logger.Log("session_end_official_get_failed", map[string]any{
+				"customer_id": ev.CustomerID, "binding_id": ev.BindingID, "msgid": ev.MsgID, "error": gerr.Error(),
+			})
+			// Event itself is seat-ended: treat as CLOSED for local align.
+			mapped = state.CustomerClosed
+		}
+		nc, cleared, aerr := AlignAfterOfficialSessionEnd(ctx, st, ev.CustomerID, mapped, "session_status_change_end")
+		if aerr != nil {
+			logger.Log("session_end_align_failed", map[string]any{
+				"customer_id": ev.CustomerID, "binding_id": ev.BindingID, "mapped": mapped, "error": aerr.Error(),
+			})
+			return
+		}
+		if !cleared {
+			logger.Log("session_end_align_skipped", map[string]any{
+				"customer_id": ev.CustomerID, "binding_id": ev.BindingID, "mapped": mapped,
+				"fence": cust.FenceSource, "state": cust.State,
+			})
+			return
+		}
+		logger.Log("session_end_aligned", map[string]any{
+			"customer_id": ev.CustomerID, "binding_id": ev.BindingID, "mapped": mapped,
+			"generation": nc.Generation, "msgid": ev.MsgID,
+		})
+		code := sessionEndMsgCode(ev.MsgCode)
+		if code == "" {
+			return
+		}
+		g.cfgMu.RLock()
+		endText := NormalizeHandoverScripts(g.liveCfg.WeCom.HandoverScripts, g.liveCfg.WeCom.HandoverWelcome).End
+		g.cfgMu.RUnlock()
+		if err := adapter.SendMsgOnEvent(ctx, b, code, endText); err != nil {
+			logger.Log("session_end_tip_failed", map[string]any{
+				"customer_id": ev.CustomerID, "binding_id": ev.BindingID, "error": err.Error(),
+			})
+		}
+	}
 	g.Health = NewHealth(HealthConfig{Logger: logger, Database: func(ctx context.Context) error { return st.DB().PingContext(ctx) }})
 	mux := http.NewServeMux()
 	mux.Handle("/cgi-bin/", srv.Handler())

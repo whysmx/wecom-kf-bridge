@@ -42,6 +42,9 @@ type SyncWorker struct {
 	MaxConc  int
 	Logger   Logger
 	OnSynced func()
+	// OnSessionEnd aligns local fence when sync sees session_status_change
+	// change_type=3. Nil disables end-sync (tests).
+	OnSessionEnd func(ctx context.Context, ev wecom.SessionEndEvent)
 
 	wake    chan string
 	mu      sync.Mutex
@@ -160,7 +163,7 @@ func (w *SyncWorker) SyncOnce(ctx context.Context, scope string) {
 		w.Logger.Log("sync_pull_token_unreadable", map[string]any{"scope": scope, "error": err})
 		return
 	}
-	res, err := info.client.SyncAll(ctx, wecom.SyncOptions{Scope: scope, EnterpriseID: info.enterpriseID, BindingID: info.bindingID, OpenKfID: info.openKfID, AccessToken: tok, Request: wecom.SyncRequest{Token: pull, OpenKfID: info.openKfID}, Store: w.Store, Origins: w.Origins, MaxPages: w.MaxPages, Logger: w.Logger})
+	res, err := info.client.SyncAll(ctx, wecom.SyncOptions{Scope: scope, EnterpriseID: info.enterpriseID, BindingID: info.bindingID, OpenKfID: info.openKfID, AccessToken: tok, Request: wecom.SyncRequest{Token: pull, OpenKfID: info.openKfID}, Store: w.Store, Origins: w.Origins, MaxPages: w.MaxPages, Logger: w.Logger, OnSessionEnd: w.OnSessionEnd})
 	if err != nil {
 		w.Logger.Log("sync_failed", map[string]any{"scope": scope, "error": err})
 		return
@@ -272,14 +275,47 @@ func (d *DeliveryWorker) DeliverOnce(ctx context.Context) {
 	wg.Wait()
 }
 
-// pullBackOfficialHumanIfNeeded: on inbound, if there is no manual handoff
-// intent but official state is WAITING_HUMAN/HUMAN, end→4 via ForceTransToAI
-// (WeCom forbids 2/3→1). The hook fail-closes after ending so this message
-// stays HELD; AI resumes after customer re-entry (official 0).
-// Manual fences are never pulled back. Hooks nil → no-op (tests/legacy).
-// Returns ok=false to HELD fail-closed when end/clear fails.
+// pullBackOfficialHumanIfNeeded: on inbound,
+//  1. Manual fence: probe official get. live∈{0,4} → clear manual fence (no
+//     trans); live==3 → keep human stay (no AI). Seat-end sync is the primary
+//     path; this covers missed session_status_change.
+//  2. No manual intent + official WAITING/HUMAN → end→4 via ForceTransToAI
+//     (WeCom forbids 2/3→1). Fail-closes so this message stays HELD.
+//
+// Hooks nil → no-op (tests/legacy). ok=false → HELD fail-closed.
 func (d *DeliveryWorker) pullBackOfficialHumanIfNeeded(ctx context.Context, c state.Customer, m state.InboxMessage) (state.Customer, bool) {
 	if c.FenceSource == state.FenceManual {
+		if d.OfficialState == nil {
+			return c, true
+		}
+		st, err := d.OfficialState(ctx, m.BindingID, c)
+		if err != nil {
+			if d.Logger != nil {
+				d.Logger.Log("handover_inbound_official_state_failed", map[string]any{
+					"customer_id": c.ID, "binding_id": m.BindingID, "error": err.Error(),
+				})
+			}
+			// Keep fence; do not deliver while official unknown.
+			return c, true
+		}
+		nc, cleared, err := AlignAfterOfficialSessionEnd(ctx, d.Store, c.ID, st, "inbound_manual_fence_probe")
+		if err != nil {
+			if d.Logger != nil {
+				d.Logger.Log("handover_inbound_session_end_align_failed", map[string]any{
+					"customer_id": c.ID, "binding_id": m.BindingID, "mapped": st, "error": err.Error(),
+				})
+			}
+			return c, true
+		}
+		if cleared {
+			if d.Logger != nil {
+				d.Logger.Log("handover_inbound_session_end_aligned", map[string]any{
+					"customer_id": c.ID, "binding_id": m.BindingID, "mapped": st, "generation": nc.Generation,
+				})
+			}
+			return nc, true
+		}
+		// live==3 (or other): keep intentional human stay.
 		return c, true
 	}
 	if d.OfficialState == nil || d.ForceTransToAI == nil {
@@ -437,6 +473,12 @@ func (d *DeliveryWorker) deliver(ctx context.Context, m state.InboxMessage) bool
 	c, ok = d.pullBackOfficialHumanIfNeeded(ctx, c, m)
 	if !ok {
 		return step(state.InboxHeld, "inbound_ai_gate_failed")
+	}
+	// Manual-fence session-end align may have rotated generation.
+	if c.Generation != m.Generation && c.State == state.CustomerAIEligible && c.FenceSource == "" {
+		if err := d.Store.RebindInboxGeneration(ctx, m.ID, m.Generation, c.Generation); err == nil {
+			m.Generation = c.Generation
+		}
 	}
 	if c.State != state.CustomerAIEligible && c.FenceSource == state.FenceAuto && c.Authorized && c.Generation == m.Generation {
 		c, m = d.autoRecover(ctx, c, m)

@@ -65,6 +65,9 @@ type SyncOptions struct {
 	MaxPages     int
 	Logger       Logger
 	Now          func() time.Time
+	// OnSessionEnd is invoked after a page commit for each newly classified
+	// session_status_change change_type=3. Nil disables local end-sync.
+	OnSessionEnd func(ctx context.Context, ev SessionEndEvent)
 }
 type SyncResult struct {
 	Scope    string
@@ -85,7 +88,21 @@ const (
 	CategoryNoExternalUID = "missing_external_userid"
 	// CategoryUnparseable quarantines a msg_list item that failed to decode.
 	CategoryUnparseable = "unparseable"
+	// CategorySessionEnd marks session_status_change change_type=3 (seat ended).
+	// Still IGNORED (never forwarded to cc-connect); runtime clears manual fence.
+	CategorySessionEnd = "session_end"
 )
+
+// SessionEndEvent is a seat-ended session_status_change (change_type=3) that
+// sync classified. Runtime aligns local fence/official cache; never trans 3→4.
+type SessionEndEvent struct {
+	BindingID      string
+	CustomerID     string
+	ExternalUserID string
+	OpenKfID       string
+	MsgCode        string
+	MsgID          string
+}
 
 func (o SyncOptions) classify(ctx context.Context, page SyncResponse, now time.Time) ([]state.InboxMessage, error) {
 	out := make([]state.InboxMessage, 0, len(page.Messages))
@@ -99,11 +116,29 @@ func (o SyncOptions) classify(ctx context.Context, page SyncResponse, now time.T
 		}
 		payload := syncPayload(m)
 		in := state.InboxMessage{ScopeID: o.Scope, BindingID: o.BindingID, ExternalMsgID: m.MsgID, CreateTime: ct, Source: fmt.Sprintf("origin:%d", m.Origin), Type: m.MsgType, ReceivedAt: now, UpdatedAt: now}
+		kfID := m.EffectiveOpenKfID()
 		switch {
-		case o.OpenKfID != "" && m.OpenKfID != "" && m.OpenKfID != o.OpenKfID:
+		case o.OpenKfID != "" && kfID != "" && kfID != o.OpenKfID:
 			in.State, in.ErrorCategory = state.InboxIgnored, CategoryForeignKf
 		case m.MsgType == "event":
-			in.State, in.ErrorCategory = state.InboxIgnored, CategoryEvent
+			if msgCode, ok := m.SessionEndChange(); ok {
+				// Seat ended: record IGNORED+session_end (not cc-connect content)
+				// and attach customer so runtime can clear manual fence.
+				ext := m.EffectiveExternalUserID()
+				if ext == "" {
+					in.State, in.ErrorCategory = state.InboxIgnored, CategoryNoExternalUID
+				} else {
+					c, err := o.Store.EnsureCustomer(ctx, o.EnterpriseID, o.BindingID, ext)
+					if err != nil {
+						return nil, err
+					}
+					in.CustomerID, in.Generation = c.ID, c.Generation
+					in.PayloadRef = msgCode // optional send_msg_on_event code
+					in.State, in.ErrorCategory = state.InboxIgnored, CategorySessionEnd
+				}
+			} else {
+				in.State, in.ErrorCategory = state.InboxIgnored, CategoryEvent
+			}
 		case !o.Origins.isCustomer(m.Origin):
 			in.State, in.ErrorCategory = state.InboxIgnored, in.Source
 		case m.ExternalUserID == "":
@@ -245,6 +280,21 @@ func (c *Client) SyncAll(ctx context.Context, opts SyncOptions) (SyncResult, err
 		n, err := opts.Store.CommitSyncPage(ctx, opts.Scope, page.NextCursor, page.HasMore == 1, msgs)
 		if err != nil {
 			return result, err
+		}
+		if opts.OnSessionEnd != nil {
+			for _, in := range msgs {
+				if in.ErrorCategory != CategorySessionEnd || in.CustomerID == "" {
+					continue
+				}
+				opts.OnSessionEnd(ctx, SessionEndEvent{
+					BindingID:      opts.BindingID,
+					CustomerID:     in.CustomerID,
+					ExternalUserID: "", // filled by runtime via customer row when needed
+					OpenKfID:       opts.OpenKfID,
+					MsgCode:        in.PayloadRef,
+					MsgID:          in.ExternalMsgID,
+				})
+			}
 		}
 		count := len(page.Messages) + len(page.Bad)
 		// Idle/empty pages (periodic sync with nothing new) would flood INFO
