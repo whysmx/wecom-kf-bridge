@@ -957,6 +957,35 @@ func (s *Store) ClearAutoFenceInPlace(ctx context.Context, customerID, reason st
 	return c, nil
 }
 
+// ClearManualFenceAfterOfficialEnd clears a manual (or human) fence after the
+// seat ended the session officially (service_state 0/4). Rotates generation
+// like RecoverCustomer so old UIDs cannot send. Works from HUMAN/WAITING or
+// AI+manual compensate. Idempotent when already AI with no fence.
+// Does not call any WeCom trans API.
+func (s *Store) ClearManualFenceAfterOfficialEnd(ctx context.Context, customerID, reason string) (Customer, error) {
+	defer s.lock("customer:" + customerID)()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Customer{}, err
+	}
+	defer tx.Rollback()
+	c, err := scanCustomer(tx.QueryRowContext(ctx, `SELECT `+customerCols+` FROM customers WHERE id=?`, customerID))
+	if err != nil {
+		return Customer{}, mapNotFound(err)
+	}
+	if c.State == CustomerAIEligible && c.FenceSource == "" {
+		return c, nil
+	}
+	nc, err := s.recoverTx(ctx, tx, c, reason)
+	if err != nil {
+		return Customer{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return Customer{}, err
+	}
+	return nc, nil
+}
+
 func (s *Store) RecoverCustomer(ctx context.Context, customerID, reason string) (Customer, error) {
 	defer s.lock("customer:" + customerID)()
 	tx, err := s.db.BeginTx(ctx, nil)

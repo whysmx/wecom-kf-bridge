@@ -468,6 +468,55 @@ func (m SyncMessage) EventType() string {
 	return e.EventType
 }
 
+// eventFields parses common nested event identity / session-status fields.
+func (m SyncMessage) eventFields() (externalUserID, openKfID, msgCode string, changeType int) {
+	var e struct {
+		ExternalUserID string `json:"external_userid"`
+		OpenKfID       string `json:"open_kfid"`
+		MsgCode        string `json:"msg_code"`
+		ChangeType     int    `json:"change_type"`
+	}
+	if len(m.Event) == 0 || json.Unmarshal(m.Event, &e) != nil {
+		return "", "", "", 0
+	}
+	return strings.TrimSpace(e.ExternalUserID), strings.TrimSpace(e.OpenKfID), strings.TrimSpace(e.MsgCode), e.ChangeType
+}
+
+// EffectiveExternalUserID prefers the top-level field, then event.external_userid
+// (session_status_change / enter_session often only nest the id).
+func (m SyncMessage) EffectiveExternalUserID() string {
+	if id := strings.TrimSpace(m.ExternalUserID); id != "" {
+		return id
+	}
+	ext, _, _, _ := m.eventFields()
+	return ext
+}
+
+// EffectiveOpenKfID prefers the top-level field, then event.open_kfid.
+func (m SyncMessage) EffectiveOpenKfID() string {
+	if id := strings.TrimSpace(m.OpenKfID); id != "" {
+		return id
+	}
+	_, kf, _, _ := m.eventFields()
+	return kf
+}
+
+// SessionEndChange reports whether this is session_status_change with
+// change_type=3 (坐席结束会话). msg_code is optional for send_msg_on_event.
+func (m SyncMessage) SessionEndChange() (msgCode string, ok bool) {
+	if strings.ToLower(strings.TrimSpace(m.MsgType)) != "event" {
+		return "", false
+	}
+	if m.EventType() != "session_status_change" {
+		return "", false
+	}
+	_, _, code, ct := m.eventFields()
+	if ct != 3 {
+		return code, false
+	}
+	return code, true
+}
+
 // BadSyncMessage is a msg_list item that could not be decoded. MsgID is
 // recovered leniently when possible; the raw item is never kept or logged.
 type BadSyncMessage struct {

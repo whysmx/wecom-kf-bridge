@@ -17,7 +17,7 @@ import (
 // After an automatic fence (official 2/3 seen at send time), the customer
 // writes again: if the official state is AI (0/1), delivery recovers the
 // customer with a new generation and delivers the message under the new UID.
-// Manual takeovers and official human states stay held.
+// Manual fence + official HUMAN stays held; manual + official AI/CLOSED clears (seat-end sync).
 func TestDeliveryAutoRecoversAutomaticFence(t *testing.T) {
 	st, c := unitStore(t)
 	ctx := context.Background()
@@ -79,19 +79,30 @@ func TestDeliveryAutoRecoversAutomaticFence(t *testing.T) {
 		t.Fatal("messages held during the human period must stay held")
 	}
 
-	// manual takeover is sticky even if the official state is AI
+	// manual fence + official still HUMAN → keep stay (HELD); get is probed.
+	official = state.CustomerHuman
 	_, _ = st.BeginHandover(ctx, c.ID, "admin_handover")
 	q := atomic.LoadInt32(&queries)
 	m4 := add()
 	d.DeliverOnce(ctx)
-	if cu2, _ := st.Customer(ctx, c.ID); cu2.State == state.CustomerAIEligible || get(m4).State != state.InboxHeld {
-		t.Fatal("manual takeover auto-cleared")
+	if atomic.LoadInt32(&queries) <= q {
+		t.Fatal("manual fence must probe official get")
 	}
-	if atomic.LoadInt32(&queries) != q {
-		t.Fatal("official state queried for a manual takeover")
+	if cu2, _ := st.Customer(ctx, c.ID); cu2.FenceSource != state.FenceManual || get(m4).State != state.InboxHeld {
+		t.Fatalf("live HUMAN must keep manual fence: %+v m4=%s", cu2, get(m4).State)
 	}
-	// no hook -> held
-	_, _ = st.RecoverCustomer(ctx, c.ID, "admin_recover")
+	// manual fence + official left human (0/4→AI) → clear fence, deliver
+	official = state.CustomerAIEligible
+	m4b := add()
+	postsBefore := atomic.LoadInt32(&posts)
+	d.DeliverOnce(ctx)
+	if cu3, _ := st.Customer(ctx, c.ID); cu3.FenceSource != "" || cu3.State != state.CustomerAIEligible {
+		t.Fatalf("live AI must clear manual fence: %+v", cu3)
+	}
+	if get(m4b).State == state.InboxHeld || atomic.LoadInt32(&posts) != postsBefore+1 {
+		t.Fatalf("after seat-end align want deliver: %+v posts=%d", get(m4b), posts)
+	}
+	// no hook -> held (auto fence, OfficialState nil)
 	_ = st.SetHandoverStatus(ctx, c.ID, state.CustomerHuman, "service_state_precheck")
 	d.OfficialState = nil
 	m5 := add()
