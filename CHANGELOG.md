@@ -4,9 +4,15 @@
 
 ## [未发布]
 
+## v0.1.12 - 2026-10-14
+
 ### 新增
 
-- 转人工上下文：网关本地存用户入站 + AI 出站草稿（`chat_context`）；admin 客户详情只读展示；有 `msg_code` 时将短摘要合并进转接 `send_msg_on_event`；存稿/摘要失败不阻断 trans→3；fence 结束或 TTL（默认 7 天）清理（`feat/handover-context`）。
+- 转人工上下文本地存稿（#43）：网关本地存用户入站 + AI 出站（`chat_context`）；admin 客户详情只读展示近期 AI↔用户；有 `msg_code` 时将短摘要合并进转接 `send_msg_on_event`；存稿/摘要失败不阻断 trans→3；fence 结束或 TTL（默认 7 天）清理。不修原生「智能助手服务记录」。
+
+### 现网
+
+- tip `903deaf9` 真机主验收 PASS；不改动 `treat_48002_as_ai_eligible`。
 
 ## v0.1.11 - 2026-10-14
 
