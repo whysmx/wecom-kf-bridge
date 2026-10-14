@@ -261,9 +261,12 @@ func (g *Gateway) wire(ctx context.Context, cfg Config, logger Logger) error {
 		}
 		g.cfgMu.RLock()
 		hcfg := HandoverConfig{
-			Phrase:  g.liveCfg.WeCom.HandoverPhrase,
-			Welcome: g.liveCfg.WeCom.HandoverWelcome,
-			Scripts: g.liveCfg.WeCom.HandoverScripts,
+			Phrase:                 g.liveCfg.WeCom.HandoverPhrase,
+			Welcome:                g.liveCfg.WeCom.HandoverWelcome,
+			Scripts:                g.liveCfg.WeCom.HandoverScripts,
+			ContextMaxTurns:        g.liveCfg.WeCom.HandoverContext.MaxTurns,
+			ContextWindowMinutes:   g.liveCfg.WeCom.HandoverContext.WindowMinutes,
+			ContextSummaryMaxChars: g.liveCfg.WeCom.HandoverContext.SummaryMaxChars,
 		}
 		for _, bc := range g.liveCfg.Bindings {
 			if bc.ID == m.BindingID {

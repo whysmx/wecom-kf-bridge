@@ -87,7 +87,11 @@ servicer_userid <input name="servicer_userid" value="{{.Config.ServicerUserID}}"
 <a href="/admin/customers?q={{.ID}}&detail=1">最近消息</a>
 <form method="post" action="/admin/customers/{{.ID}}/handover">{{template "form" $}}<input type="hidden" name="revision" value="{{.Revision}}"><button>转人工</button></form>
 <form method="post" action="/admin/customers/{{.ID}}/recover">{{template "form" $}}<input type="hidden" name="revision" value="{{.Revision}}"><button>恢复 AI（新代际）</button></form></td></tr>{{end}}</table>
-{{if .Data.Detail}}<h2>最近 inbox</h2><table>{{range .Data.Inbox}}<tr><td>{{.ID}}</td><td>{{.State}}</td><td>{{.Attempt}}</td><td>{{.ErrorCategory}}</td><td>{{ts .ReceivedAt}}</td></tr>{{end}}</table>
+{{if .Data.Detail}}<h2>近期 AI↔用户（本地存稿）</h2>
+<p>原生智能助手服务记录不含 <code>kf/send_msg</code> 的 AI 气泡；以下为网关本地草稿，供接待人查阅。</p>
+<table><tr><th>时间</th><th>角色</th><th>类型</th><th>内容</th></tr>
+{{range .Data.ChatTurns}}<tr><td>{{ts .CreatedAt}}</td><td>{{if eq .Role "ai"}}助手{{else}}用户{{end}}</td><td>{{.MsgType}}</td><td>{{.Content}}</td></tr>{{else}}<tr><td colspan="4">暂无本地存稿</td></tr>{{end}}</table>
+<h2>最近 inbox</h2><table>{{range .Data.Inbox}}<tr><td>{{.ID}}</td><td>{{.State}}</td><td>{{.Attempt}}</td><td>{{.ErrorCategory}}</td><td>{{ts .ReceivedAt}}</td></tr>{{end}}</table>
 <h2>最近 outbox</h2><table>{{range .Data.Outbox}}<tr><td>{{.ID}}</td><td>{{.State}}</td><td>{{.ChunksSent}}/{{.ChunksTotal}}</td><td>{{.ErrorCategory}}</td><td>{{.BindingRevision}}</td><td>{{ts .CreatedAt}}</td></tr>{{end}}</table>{{end}}
 {{template "bottom"}}{{end}}
 

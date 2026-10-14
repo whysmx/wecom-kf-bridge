@@ -21,6 +21,10 @@ type HandoverConfig struct {
 	Phrase  string          // exact trim match; default 转人工
 	Welcome string          // legacy queue tip; Scripts.Queue wins when set
 	Scripts HandoverScripts // three configurable send_msg_on_event phrases
+	// Context window for merging local AI↔user draft into the event tip.
+	ContextMaxTurns        int
+	ContextWindowMinutes   int
+	ContextSummaryMaxChars int
 }
 
 func (h HandoverConfig) phrase() string {
@@ -60,7 +64,8 @@ func RequestHumanHandover(ctx context.Context, store *state.Store, ad bridge.Ada
 		return err
 	}
 	if msgCode != "" {
-		_ = ad.SendMsgOnEvent(ctx, b, msgCode, cfg.welcome())
+		tip := store.MergeHandoverTipWithContext(ctx, c.ID, cfg.welcome(), cfg.ContextMaxTurns, cfg.ContextWindowMinutes, cfg.ContextSummaryMaxChars)
+		_ = ad.SendMsgOnEvent(ctx, b, msgCode, tip)
 	}
 	if _, err := store.BeginHandover(ctx, c.ID, reason); err != nil {
 		// Official already HUMAN: must plant manual intent before returning.

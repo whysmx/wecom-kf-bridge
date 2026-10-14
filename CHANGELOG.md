@@ -4,6 +4,9 @@
 
 ## [未发布]
 
+### 新增
+
+- 转人工上下文：网关本地存用户入站 + AI 出站草稿（`chat_context`）；admin 客户详情只读展示；有 `msg_code` 时将短摘要合并进转接 `send_msg_on_event`；存稿/摘要失败不阻断 trans→3；fence 结束或 TTL（默认 7 天）清理（`feat/handover-context`）。
 
 ## v0.1.11 - 2026-10-14
 

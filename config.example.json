@@ -48,6 +48,12 @@
       "queue": "正在为您转接人工客服，请稍候…",
       "human": "人工客服已接入，请描述您的问题。",
       "end": "本次人工服务已结束，后续将由智能助手继续为您服务。"
+    },
+    "handover_context": {
+      "max_turns": 20,
+      "window_minutes": 30,
+      "ttl_days": 7,
+      "summary_max_chars": 600
     }
   },
   "enterprises": [
