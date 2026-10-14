@@ -385,6 +385,17 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_customers_uid ON customers(binding_id,uid)`,
 		`CREATE INDEX IF NOT EXISTS idx_inbox_state ON inbox(binding_id,state)`,
 		`CREATE INDEX IF NOT EXISTS idx_outbox_state ON outbox(binding_id,state)`,
+		`CREATE TABLE IF NOT EXISTS chat_context (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	open_kfid TEXT NOT NULL,
+	external_userid TEXT NOT NULL,
+	binding_id TEXT NOT NULL DEFAULT '',
+	customer_id TEXT NOT NULL DEFAULT '',
+	role TEXT NOT NULL,
+	msg_type TEXT NOT NULL DEFAULT 'text',
+	content TEXT NOT NULL DEFAULT '',
+	created_at INTEGER NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS idx_chat_context_key_time ON chat_context(open_kfid,external_userid,created_at DESC)`,
 	}
 	for _, q := range stmts {
 		if _, err := db.ExecContext(ctx, q); err != nil {
@@ -983,6 +994,8 @@ func (s *Store) ClearManualFenceAfterOfficialEnd(ctx context.Context, customerID
 	if err = tx.Commit(); err != nil {
 		return Customer{}, err
 	}
+	// Session ended: drop local AI↔user draft for this reception key (best-effort).
+	_ = s.ClearChatTurnsByCustomer(ctx, customerID)
 	return nc, nil
 }
 
@@ -1007,6 +1020,7 @@ func (s *Store) RecoverCustomer(ctx context.Context, customerID, reason string) 
 	if err = tx.Commit(); err != nil {
 		return Customer{}, err
 	}
+	_ = s.ClearChatTurnsByCustomer(ctx, customerID)
 	return nc, nil
 }
 
@@ -1075,6 +1089,7 @@ func (s *Store) CommitSyncPage(ctx context.Context, scopeID, nextCursor string, 
 		return 0, ErrNoProgress
 	}
 	inserted := 0
+	var pendingChat []pendingChatTurn
 	now := s.now()
 	for _, in := range msgs {
 		if in.ScopeID == "" {
@@ -1129,6 +1144,8 @@ func (s *Store) CommitSyncPage(ctx context.Context, scopeID, nextCursor string, 
 			if _, e = tx.ExecContext(ctx, `UPDATE customers SET last_inbound_at=?,window_used=0,updated_at=? WHERE id=? AND last_inbound_at<=?`, unix(at), unix(now), in.CustomerID, unix(at)); e != nil {
 				return 0, e
 			}
+			// Handover chat draft after commit (side-channel; must not roll back inbox).
+			pendingChat = append(pendingChat, pendingChatTurn{customerID: in.CustomerID, msgType: in.Type, payload: in.PayloadRef})
 		}
 	}
 	// pending is cleared only once the final page (has_more=0) is durable;
@@ -1143,7 +1160,15 @@ func (s *Store) CommitSyncPage(ctx context.Context, scopeID, nextCursor string, 
 	if err = tx.Commit(); err != nil {
 		return 0, err
 	}
+	for _, p := range pendingChat {
+		_ = s.AppendChatTurn(ctx, p.customerID, ChatRoleUser, p.msgType, ChatContentForInbound(p.msgType, p.payload), 0)
+	}
 	return inserted, nil
+}
+
+// pendingChatTurn is collected during CommitSyncPage for post-commit draft writes.
+type pendingChatTurn struct {
+	customerID, msgType, payload string
 }
 
 func nextCompatID(ctx context.Context, tx *sql.Tx, bindingID string) (int64, error) {

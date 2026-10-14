@@ -56,3 +56,12 @@ func NormalizeHandoverScripts(s HandoverScripts, legacyWelcome string) HandoverS
 		End:   s.endText(),
 	}
 }
+
+// HandoverContextConfig is the local chat-draft window used when transferring
+// to a human (admin detail + optional send_msg_on_event summary).
+type HandoverContextConfig struct {
+	MaxTurns        int `json:"max_turns"`
+	WindowMinutes   int `json:"window_minutes"`
+	TTLDays         int `json:"ttl_days"`
+	SummaryMaxChars int `json:"summary_max_chars"`
+}

@@ -125,11 +125,15 @@ func (c *Console) customersPage(w http.ResponseWriter, r *http.Request, s *sessi
 	if r.URL.Query().Get("detail") == "1" && len(mine) == 1 {
 		in, err1 := c.cfg.Store.InboxByStates(r.Context(), c.cfg.EnterpriseID, mine[0].ID, nil, 20)
 		out, err2 := c.cfg.Store.OutboxByStates(r.Context(), c.cfg.EnterpriseID, mine[0].ID, nil, 20)
+		turns, err3 := c.cfg.Store.ListChatTurnsByCustomer(r.Context(), mine[0].ID, 0, 0)
 		if err1 != nil || err2 != nil {
 			storeErr(w)
 			return
 		}
-		data["Detail"], data["Inbox"], data["Outbox"] = true, in, out
+		if err3 != nil {
+			turns = nil // draft read failure: still show inbox/outbox
+		}
+		data["Detail"], data["Inbox"], data["Outbox"], data["ChatTurns"] = true, in, out, turns
 	}
 	c.renderPage(w, r, s, "customers", data)
 }

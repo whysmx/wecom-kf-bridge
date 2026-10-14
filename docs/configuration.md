@@ -34,6 +34,10 @@
 | `wecom.handover_scripts.queue` | `trans→2` 后 `send_msg_on_event` 排队提示（默认「正在为您转接人工客服，请稍候…」） |
 | `wecom.handover_scripts.human` | 接入提示文案（可配；本阶段转人工路径不发送） |
 | `wecom.handover_scripts.end` | 结束/回切话术（可配；阶段3 再接线，本 PR 不发送） |
+| `wecom.handover_context.max_turns` | 本地 AI↔用户存稿条数上限（默认 20） |
+| `wecom.handover_context.window_minutes` | 存稿时间窗（默认 30 分钟） |
+| `wecom.handover_context.ttl_days` | 全局 TTL 清理（默认 7 天；会话结束清 fence 时也会清该客户稿） |
+| `wecom.handover_context.summary_max_chars` | 转接 `send_msg_on_event` 摘要最大字符（默认 600） |
 
 ## 2.1 管理后台在线保存（系统设置页）
 

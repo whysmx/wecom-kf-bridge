@@ -620,7 +620,23 @@ func (s *Server) send(ctx context.Context, b Binding, sc state.Customer, agent, 
 	if _, err = s.cfg.Store.TransitionOutbox(context.WithoutCancel(ctx), o.ID, state.OutboxUpstreamAccepted, ""); err != nil {
 		return errAPI{ErrCodeUnknown, "send result unknown", http.StatusBadGateway}
 	}
+	// Local handover draft: AI outbound (best-effort; never fail the send).
+	s.recordAIChatTurn(context.WithoutCancel(ctx), sc.ID, content)
 	return nil
+}
+
+// recordAIChatTurn appends an AI outbound draft when the store supports it.
+func (s *Server) recordAIChatTurn(ctx context.Context, customerID, content string) {
+	type chatWriter interface {
+		AppendChatTurn(context.Context, string, string, string, string, int) error
+	}
+	w, ok := s.cfg.Store.(chatWriter)
+	if !ok {
+		return
+	}
+	if err := w.AppendChatTurn(ctx, customerID, state.ChatRoleAI, "text", content, 0); err != nil && s.cfg.Logger != nil {
+		s.cfg.Logger.Log("chat_context_append_failed", map[string]any{"customer_id": customerID, "role": state.ChatRoleAI, "error": err.Error()})
+	}
 }
 
 // ensureAIEligibleForSend: WeCom forbids forcing 2/3→1. When official is

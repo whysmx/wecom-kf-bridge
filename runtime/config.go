@@ -77,6 +77,8 @@ type Config struct {
 		// HandoverScripts are three configurable send_msg_on_event phrases:
 		// queue (trans→2), human (trans→3 tip), end (phase-3 recover; not sent here).
 		HandoverScripts HandoverScripts `json:"handover_scripts"`
+		// HandoverContext: local AI↔user draft window for reception (admin + event tip).
+		HandoverContext HandoverContextConfig `json:"handover_context"`
 	} `json:"wecom"`
 	Enterprises []EnterpriseConfig `json:"enterprises"`
 	Bindings    []BindingConfig    `json:"bindings"`
@@ -223,6 +225,19 @@ func (c *Config) defaults() {
 	if c.Admin.Listen != "" && c.Admin.LanNoLogin == nil {
 		v := true
 		c.Admin.LanNoLogin = &v
+	}
+	hc := &c.WeCom.HandoverContext
+	if hc.MaxTurns <= 0 {
+		hc.MaxTurns = 20
+	}
+	if hc.WindowMinutes <= 0 {
+		hc.WindowMinutes = 30
+	}
+	if hc.TTLDays <= 0 {
+		hc.TTLDays = 7
+	}
+	if hc.SummaryMaxChars <= 0 {
+		hc.SummaryMaxChars = 600
 	}
 }
 

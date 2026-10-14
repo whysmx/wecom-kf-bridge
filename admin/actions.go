@@ -551,6 +551,7 @@ func (c *Console) customerHandover(r *http.Request, _ *session) result {
 		return result{location: "/admin/customers?q=" + cu.ID, flash: "转人工失败：" + detail + "（请在绑定配置填写 servicer_userid）"}
 	}
 	welcome := strings.TrimSpace(c.cfg.HandoverWelcome)
+	welcome = c.cfg.Store.MergeHandoverTipWithContext(r.Context(), cu.ID, welcome, 0, 0, 0)
 	official, certain, rejected := c.transferEvent(r, cu, state.CustomerHuman, sid, welcome, state.CustomerHuman)
 	if rejected != nil {
 		c.audit(r, "customer", cu.ID, "handover", "rejected", rejected.Error(), cu.Revision)
